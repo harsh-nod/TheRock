@@ -60,11 +60,3 @@ default_patterns = false
 include = [
   "**/*",
 ]
-
-# rocm-kpack
-[components.dbg."base/rocm-kpack/stage"]
-optional = true
-[components.dev."base/rocm-kpack/stage"]
-optional = true
-[components.lib."base/rocm-kpack/stage"]
-optional = true
