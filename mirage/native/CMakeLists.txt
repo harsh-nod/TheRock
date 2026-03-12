@@ -17,6 +17,7 @@ add_library(mirage_sim_core STATIC
   src/isa/gfx950/binary_decoder.cc
   src/mirage_sim_core.cc
   src/isa/gfx950/interpreter.cc
+  src/isa/jit/cross_arch_translator.cc
   src/isa/jit/translation_rules.cc
   src/isa/jit/wave_adapter.cc
   src/isa/jit/semantic_lowering.cc
@@ -91,10 +92,28 @@ add_executable(mirage_jit_translation_rules_test
 )
 target_link_libraries(mirage_jit_translation_rules_test PRIVATE mirage_sim_core)
 
+add_executable(mirage_jit_cross_arch_translator_test
+  tests/isa/jit/cross_arch_translator_test.cc
+)
+target_link_libraries(mirage_jit_cross_arch_translator_test PRIVATE mirage_sim_core)
+
+add_executable(mirage_jit_branch_fixup_test
+  tests/isa/jit/branch_fixup_test.cc
+)
+target_link_libraries(mirage_jit_branch_fixup_test PRIVATE mirage_sim_core)
+
 add_executable(mirage_jit_wave_adapter_test
   tests/isa/jit/wave_adapter_test.cc
 )
 target_link_libraries(mirage_jit_wave_adapter_test PRIVATE mirage_sim_core)
 
+add_executable(mirage_jit_translation_coverage_test
+  tests/isa/jit/translation_coverage_test.cc
+)
+target_link_libraries(mirage_jit_translation_coverage_test PRIVATE mirage_sim_core)
+
 add_test(NAME mirage_jit_translation_rules_test COMMAND mirage_jit_translation_rules_test)
+add_test(NAME mirage_jit_cross_arch_translator_test COMMAND mirage_jit_cross_arch_translator_test)
+add_test(NAME mirage_jit_branch_fixup_test COMMAND mirage_jit_branch_fixup_test)
 add_test(NAME mirage_jit_wave_adapter_test COMMAND mirage_jit_wave_adapter_test)
+add_test(NAME mirage_jit_translation_coverage_test COMMAND mirage_jit_translation_coverage_test)
