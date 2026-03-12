@@ -15,9 +15,15 @@ target_compile_features(simdojo PUBLIC cxx_std_20)
 add_library(mirage_sim_core STATIC
   generated/gfx950_instruction_catalog.cc
   src/isa/gfx950/binary_decoder.cc
+  src/isa/gfx1250/bringup_profile.cc
+  src/isa/gfx1250/decoder_seed_catalog.cc
+  src/isa/gfx1250/stub_decoder.cc
+  src/isa/gfx1250/stub_decoder_selector.cc
+  src/isa/gfx1250/target_catalog.cc
   src/mirage_sim_core.cc
   src/isa/gfx950/interpreter.cc
   src/isa/jit/cross_arch_translator.cc
+  src/isa/jit/gfx1250_stub_ingress.cc
   src/isa/jit/translation_rules.cc
   src/isa/jit/wave_adapter.cc
   src/isa/jit/semantic_lowering.cc
@@ -130,3 +136,10 @@ add_executable(mirage_jit_semantic_lowering_test
 target_link_libraries(mirage_jit_semantic_lowering_test PRIVATE mirage_sim_core)
 
 add_test(NAME mirage_jit_semantic_lowering_test COMMAND mirage_jit_semantic_lowering_test)
+
+add_executable(mirage_jit_gfx1250_coverage_test
+  tests/isa/jit/gfx1250_coverage_test.cc
+)
+target_link_libraries(mirage_jit_gfx1250_coverage_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_jit_gfx1250_coverage_test COMMAND mirage_jit_gfx1250_coverage_test)
