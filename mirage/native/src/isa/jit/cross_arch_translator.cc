@@ -269,14 +269,24 @@ bool CrossArchTranslator::TranslateInstruction(
     InstructionDiagnostic* diagnostic) const {
   if (wave_adapter_.IsWaveSensitive(source.opcode)) {
     diagnostic->status = TranslationStatus::kUnsupported;
+    diagnostic->rejection_reason = RejectionReason::kWaveSensitive;
     diagnostic->message = "Wave-topology-sensitive instruction excluded from "
                           "executable translation.";
+    return false;
+  }
+
+  if (IsLdsTouchingOpcode(source.opcode)) {
+    diagnostic->status = TranslationStatus::kUnsupported;
+    diagnostic->rejection_reason = RejectionReason::kLdsTouching;
+    diagnostic->message = "LDS-touching DS opcode has no executable "
+                          "translation rule.";
     return false;
   }
 
   const TranslationRule* rule = rule_table_.FindRule(source.opcode);
   if (rule == nullptr) {
     diagnostic->status = TranslationStatus::kUnsupported;
+    diagnostic->rejection_reason = RejectionReason::kNoTranslationRule;
     diagnostic->message = "No translation rule found for opcode.";
     return false;
   }
@@ -300,6 +310,7 @@ bool CrossArchTranslator::TranslateInstruction(
       break;
     default:
       diagnostic->status = TranslationStatus::kUnsupported;
+      diagnostic->rejection_reason = RejectionReason::kRuleTierNotExecutable;
       diagnostic->message = "Rule tier not executable.";
       return false;
   }

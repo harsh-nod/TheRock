@@ -314,6 +314,96 @@ bool TestLdsDetectionFlagSet() {
   return ok;
 }
 
+bool TestStructuredRejectionReasons() {
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(1)),
+      DecodedInstruction::Binary("V_READLANE_B32",
+                                 InstructionOperand::Sgpr(1),
+                                 InstructionOperand::Vgpr(0),
+                                 InstructionOperand::Sgpr(0)),
+      DecodedInstruction::Unary("DS_READ_B32",
+                                InstructionOperand::Vgpr(0),
+                                InstructionOperand::Vgpr(1)),
+      DecodedInstruction::Nullary("FAKE_NONEXISTENT_OP"),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx1201;
+  config.target_arch = TargetArchitecture::kGfx950;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program);
+
+  return Expect(!result.is_executable,
+                "mixed program should not be executable") &&
+         Expect(result.diagnostics.size() == 5,
+                "should have 5 diagnostics") &&
+         Expect(result.diagnostics[0].rejection_reason ==
+                    RejectionReason::kNone,
+                "S_MOV_B32 should have no rejection") &&
+         Expect(result.diagnostics[1].rejection_reason ==
+                    RejectionReason::kWaveSensitive,
+                "V_READLANE_B32 should be rejected as wave-sensitive") &&
+         Expect(result.diagnostics[2].rejection_reason ==
+                    RejectionReason::kLdsTouching,
+                "DS_READ_B32 should be rejected as LDS-touching") &&
+         Expect(result.diagnostics[3].rejection_reason ==
+                    RejectionReason::kNoTranslationRule,
+                "FAKE_OP should be rejected as no-rule");
+}
+
+bool TestReverseDirectionGfx950ToGfx1201NoRules() {
+  // gfx950 -> gfx1201 has no rule table entries yet.
+  // Translation should fail with all instructions unsupported.
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(42)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx950;
+  config.target_arch = TargetArchitecture::kGfx1201;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program);
+
+  bool ok = Expect(!result.is_executable,
+                   "gfx950->gfx1201 should not be executable (no rules)") &&
+            Expect(result.capability_summary.unsupported_count == 2,
+                   "all 2 instructions should be unsupported") &&
+            Expect(!result.requires_exec_narrowing,
+                   "gfx950->gfx1201 should not require exec narrowing");
+
+  // Coverage report should also show all unsupported.
+  CapabilitySummary summary = translator.ComputeCoverage(program);
+  ok = Expect(summary.unsupported_count == 2,
+              "coverage should show 2 unsupported for gfx950->gfx1201") &&
+       Expect(summary.executable_count == 0,
+              "coverage should show 0 executable for gfx950->gfx1201") && ok;
+
+  return ok;
+}
+
+bool TestReverseDirectionArchNames() {
+  return Expect(CrossArchTranslator::ArchitectureName(
+                    SourceArchitecture::kGfx950) == "gfx950",
+                "source gfx950 name") &&
+         Expect(CrossArchTranslator::ArchitectureName(
+                    TargetArchitecture::kGfx1201) == "gfx1201",
+                "target gfx1201 name") &&
+         Expect(CrossArchTranslator::ArchitectureName(
+                    TargetArchitecture::kGfx1250) == "gfx1250",
+                "target gfx1250 name") &&
+         Expect(CrossArchTranslator::ArchitectureName(
+                    SourceArchitecture::kGfx1250) == "gfx1250",
+                "source gfx1250 name");
+}
+
 }  // namespace
 
 int main() {
@@ -329,6 +419,9 @@ int main() {
   ok = TestExecNarrowingFlagSet() && ok;
   ok = TestExecManipulatingFlagSet() && ok;
   ok = TestLdsDetectionFlagSet() && ok;
+  ok = TestStructuredRejectionReasons() && ok;
+  ok = TestReverseDirectionGfx950ToGfx1201NoRules() && ok;
+  ok = TestReverseDirectionArchNames() && ok;
 
   if (ok) {
     std::cerr << "All cross_arch_translator tests passed.\n";

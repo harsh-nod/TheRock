@@ -37,10 +37,22 @@ enum class DiagnosticDetail : std::uint8_t {
   kVerbose,
 };
 
+// Structured reason for why an instruction was excluded from executable
+// translation.  This allows callers to inspect rejection reasons
+// programmatically rather than parsing message strings.
+enum class RejectionReason : std::uint8_t {
+  kNone,
+  kWaveSensitive,
+  kNoTranslationRule,
+  kRuleTierNotExecutable,
+  kLdsTouching,
+};
+
 struct InstructionDiagnostic {
   std::size_t source_index = 0;
   std::string_view source_opcode;
   TranslationStatus status = TranslationStatus::kUnsupported;
+  RejectionReason rejection_reason = RejectionReason::kNone;
   std::string message;
   std::uint32_t output_instruction_count = 0;
   std::size_t output_begin_index = 0;
