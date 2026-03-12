@@ -1932,7 +1932,17 @@ int main() {
       !Expect(interpreter.Supports("DS_WRITE_B32"),
               "expected DS_WRITE_B32 support") ||
       !Expect(!interpreter.Supports("BUFFER_LOAD_DWORD"),
-              "expected BUFFER_LOAD_DWORD semantics to be unimplemented")) {
+              "expected BUFFER_LOAD_DWORD semantics to be unimplemented") ||
+      !Expect(interpreter.Supports("V_ACCVGPR_READ"),
+              "expected V_ACCVGPR_READ_B32 support") ||
+      !Expect(interpreter.Supports("V_ACCVGPR_WRITE"),
+              "expected V_ACCVGPR_WRITE_B32 support") ||
+      !Expect(interpreter.Supports("V_ACCVGPR_MOV_B32"),
+              "expected V_ACCVGPR_MOV_B32 support") ||
+      !Expect(interpreter.Supports("V_MFMA_F32_4X4X1_16B_F32"),
+              "expected V_MFMA_F32_4X4X1_16B_F32 support") ||
+      !Expect(interpreter.Supports("V_MFMA_F32_16X16X4_F32"),
+              "expected V_MFMA_F32_16X16X4_F32 support")) {
     return 1;
   }
 
@@ -12015,6 +12025,479 @@ int main() {
       return 1;
     }
   }
+
+  // --- ACCVGPR instruction tests ---
+
+  // Test V_ACCVGPR_WRITE_B32 + V_ACCVGPR_READ_B32 round-trip.
+  {
+    WaveExecutionState accvgpr_state;
+    accvgpr_state.exec_mask = ~0ULL;
+
+    // Write known values into VGPRs, then write to ACCVGPRs, read back.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      accvgpr_state.vgprs[0][lane] = static_cast<std::uint32_t>(lane * 100 + 7);
+      accvgpr_state.vgprs[1][lane] = static_cast<std::uint32_t>(lane * 200 + 13);
+    }
+
+    const std::vector<DecodedInstruction> accvgpr_program = {
+        // Write VGPR0 -> ACCVGPR4
+        DecodedInstruction::Unary("V_ACCVGPR_WRITE",
+                                  InstructionOperand::Accvgpr(4),
+                                  InstructionOperand::Vgpr(0)),
+        // Write VGPR1 -> ACCVGPR5
+        DecodedInstruction::Unary("V_ACCVGPR_WRITE",
+                                  InstructionOperand::Accvgpr(5),
+                                  InstructionOperand::Vgpr(1)),
+        // Read ACCVGPR4 -> VGPR10
+        DecodedInstruction::Unary("V_ACCVGPR_READ",
+                                  InstructionOperand::Vgpr(10),
+                                  InstructionOperand::Accvgpr(4)),
+        // Read ACCVGPR5 -> VGPR11
+        DecodedInstruction::Unary("V_ACCVGPR_READ",
+                                  InstructionOperand::Vgpr(11),
+                                  InstructionOperand::Accvgpr(5)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(accvgpr_program, &accvgpr_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "ACCVGPR write/read round-trip failed\n";
+      return 1;
+    }
+
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      if (!Expect(accvgpr_state.vgprs[10][lane] == lane * 100 + 7,
+                  "ACCVGPR read-back lane mismatch (reg 10)") ||
+          !Expect(accvgpr_state.vgprs[11][lane] == lane * 200 + 13,
+                  "ACCVGPR read-back lane mismatch (reg 11)")) {
+        std::cerr << "  lane=" << lane << '\n';
+        return 1;
+      }
+    }
+
+    // Also verify compiled path.
+    std::vector<CompiledInstruction> compiled_accvgpr;
+    if (!Expect(interpreter.CompileProgram(accvgpr_program, &compiled_accvgpr,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "ACCVGPR compile failed\n";
+      return 1;
+    }
+    WaveExecutionState compiled_accvgpr_state;
+    compiled_accvgpr_state.exec_mask = ~0ULL;
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      compiled_accvgpr_state.vgprs[0][lane] =
+          static_cast<std::uint32_t>(lane * 100 + 7);
+      compiled_accvgpr_state.vgprs[1][lane] =
+          static_cast<std::uint32_t>(lane * 200 + 13);
+    }
+    if (!Expect(interpreter.ExecuteProgram(compiled_accvgpr, &compiled_accvgpr_state,
+                                           &error_message),
+                error_message.c_str()) ||
+        !Expect(compiled_accvgpr_state.vgprs[10][0] == 7,
+                "compiled ACCVGPR read-back lane 0") ||
+        !Expect(compiled_accvgpr_state.vgprs[10][63] == 63 * 100 + 7,
+                "compiled ACCVGPR read-back lane 63")) {
+      std::cerr << "ACCVGPR compiled round-trip failed\n";
+      return 1;
+    }
+  }
+
+  // Test V_ACCVGPR_MOV_B32 between accumulator registers.
+  {
+    WaveExecutionState mov_state;
+    mov_state.exec_mask = ~0ULL;
+
+    // Pre-populate ACCVGPR 10 with known values.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      mov_state.accvgprs[10][lane] = static_cast<std::uint32_t>(lane + 1000);
+    }
+
+    const std::vector<DecodedInstruction> mov_program = {
+        // MOV ACCVGPR10 -> ACCVGPR20
+        DecodedInstruction::Unary("V_ACCVGPR_MOV_B32",
+                                  InstructionOperand::Accvgpr(20),
+                                  InstructionOperand::Accvgpr(10)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(mov_program, &mov_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "ACCVGPR MOV failed\n";
+      return 1;
+    }
+
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      if (!Expect(mov_state.accvgprs[20][lane] == lane + 1000,
+                  "ACCVGPR MOV lane mismatch")) {
+        std::cerr << "  lane=" << lane << '\n';
+        return 1;
+      }
+    }
+  }
+
+  // Test ACCVGPR EXEC mask respect: inactive lanes should not be modified.
+  {
+    WaveExecutionState exec_state;
+    exec_state.exec_mask = 0b1010ULL;  // Only lanes 1 and 3 active.
+
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      exec_state.vgprs[0][lane] = 42;
+      exec_state.accvgprs[0][lane] = 0xDEADBEEF;
+    }
+
+    const std::vector<DecodedInstruction> exec_program = {
+        DecodedInstruction::Unary("V_ACCVGPR_WRITE",
+                                  InstructionOperand::Accvgpr(0),
+                                  InstructionOperand::Vgpr(0)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(exec_program, &exec_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "ACCVGPR EXEC mask test failed\n";
+      return 1;
+    }
+
+    // Lane 0 inactive: should keep 0xDEADBEEF.
+    if (!Expect(exec_state.accvgprs[0][0] == 0xDEADBEEF,
+                "inactive lane 0 should be untouched") ||
+        // Lane 1 active: should be 42.
+        !Expect(exec_state.accvgprs[0][1] == 42,
+                "active lane 1 should be 42") ||
+        // Lane 2 inactive: should keep 0xDEADBEEF.
+        !Expect(exec_state.accvgprs[0][2] == 0xDEADBEEF,
+                "inactive lane 2 should be untouched") ||
+        // Lane 3 active: should be 42.
+        !Expect(exec_state.accvgprs[0][3] == 42,
+                "active lane 3 should be 42")) {
+      return 1;
+    }
+  }
+
+  // Test V_ACCVGPR_WRITE_B32 from immediate value.
+  {
+    WaveExecutionState imm_state;
+    imm_state.exec_mask = ~0ULL;
+
+    const std::vector<DecodedInstruction> imm_program = {
+        DecodedInstruction::Unary("V_ACCVGPR_WRITE",
+                                  InstructionOperand::Accvgpr(0),
+                                  InstructionOperand::Imm32(0x12345678)),
+        DecodedInstruction::Unary("V_ACCVGPR_READ",
+                                  InstructionOperand::Vgpr(0),
+                                  InstructionOperand::Accvgpr(0)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(imm_program, &imm_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "ACCVGPR write from immediate failed\n";
+      return 1;
+    }
+
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      if (!Expect(imm_state.vgprs[0][lane] == 0x12345678,
+                  "ACCVGPR write from imm: read-back mismatch")) {
+        std::cerr << "  lane=" << lane << '\n';
+        return 1;
+      }
+    }
+  }
+
+  // --- MFMA instruction tests ---
+
+  // Test V_MFMA_F32_4X4X1_16B_F32: identity-like multiplication.
+  // Set up 16 independent 4x4 blocks. For simplicity, use block 0 (lanes 0-3).
+  // A[row] = row+1 (lanes 0-3 hold src0 values 1,2,3,4).
+  // B[col] = col+1 (lanes 0-3 hold src1 values 1,2,3,4).
+  // C = 0 (all accvgprs start zeroed).
+  // Expected D[row][col] = (row+1) * (col+1).
+  {
+    WaveExecutionState mfma_state;
+    mfma_state.exec_mask = ~0ULL;
+
+    // Set src0 and src1 for all 64 lanes.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      const std::size_t row = lane % 4;
+      const float a_val = static_cast<float>(row + 1);
+      mfma_state.vgprs[0][lane] = FloatBits(a_val);
+
+      const float b_val = static_cast<float>(row + 1);
+      mfma_state.vgprs[1][lane] = FloatBits(b_val);
+    }
+
+    // C accumulators start at zero (default).
+    const std::vector<DecodedInstruction> mfma_4x4_program = {
+        // dst=ACCVGPR[0..3], src0=VGPR0, src1=VGPR1, src2=ACCVGPR[4..7]
+        DecodedInstruction::FourOperand(
+            "V_MFMA_F32_4X4X1_16B_F32",
+            InstructionOperand::Accvgpr(0), InstructionOperand::Vgpr(0),
+            InstructionOperand::Vgpr(1), InstructionOperand::Accvgpr(4)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(mfma_4x4_program, &mfma_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "MFMA 4x4x1 failed: " << error_message << '\n';
+      return 1;
+    }
+
+    // Verify block 0 (lanes 0-3).
+    // Lane l (row=l%4): accvgpr[0+col][l] should be (row+1)*(col+1).
+    bool mfma_ok = true;
+    for (std::size_t lane = 0; lane < 4; ++lane) {
+      const std::size_t row = lane % 4;
+      for (std::size_t col = 0; col < 4; ++col) {
+        const float expected = static_cast<float>((row + 1) * (col + 1));
+        const float actual_f = [&]() {
+          std::uint32_t bits = mfma_state.accvgprs[0 + col][lane];
+          float f;
+          std::memcpy(&f, &bits, sizeof(f));
+          return f;
+        }();
+        if (!Expect(actual_f == expected,
+                    "MFMA 4x4x1 block 0 result mismatch")) {
+          std::cerr << "  lane=" << lane << " col=" << col
+                    << " expected=" << expected << " got=" << actual_f << '\n';
+          mfma_ok = false;
+        }
+      }
+    }
+    if (!mfma_ok) {
+      return 1;
+    }
+  }
+
+  // Test V_MFMA_F32_4X4X1_16B_F32 with accumulation (C != 0).
+  {
+    WaveExecutionState mfma_acc_state;
+    mfma_acc_state.exec_mask = ~0ULL;
+
+    // A=1.0, B=1.0 for all lanes -> each element gets += 1.0.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      mfma_acc_state.vgprs[0][lane] = FloatBits(1.0f);
+      mfma_acc_state.vgprs[1][lane] = FloatBits(1.0f);
+    }
+
+    // C (accvgprs 4..7) = 10.0 for all lanes.
+    for (std::size_t col = 0; col < 4; ++col) {
+      for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+        mfma_acc_state.accvgprs[4 + col][lane] = FloatBits(10.0f);
+      }
+    }
+
+    const std::vector<DecodedInstruction> mfma_acc_program = {
+        DecodedInstruction::FourOperand(
+            "V_MFMA_F32_4X4X1_16B_F32",
+            InstructionOperand::Accvgpr(0), InstructionOperand::Vgpr(0),
+            InstructionOperand::Vgpr(1), InstructionOperand::Accvgpr(4)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(mfma_acc_program, &mfma_acc_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "MFMA 4x4x1 accumulate failed\n";
+      return 1;
+    }
+
+    // D[row][col] = C + A*B = 10.0 + 1.0*1.0 = 11.0 for all elements.
+    for (std::size_t lane = 0; lane < 4; ++lane) {
+      for (std::size_t col = 0; col < 4; ++col) {
+        float actual;
+        std::memcpy(&actual, &mfma_acc_state.accvgprs[0 + col][lane],
+                    sizeof(actual));
+        if (!Expect(actual == 11.0f,
+                    "MFMA 4x4x1 accumulate: expected 11.0")) {
+          std::cerr << "  lane=" << lane << " col=" << col
+                    << " got=" << actual << '\n';
+          return 1;
+        }
+      }
+    }
+  }
+
+  // Test V_MFMA_F32_16X16X4_F32: simple case with C=0.
+  // Use a known pattern: A[row][k] = row+1, B[k][col] = col+1.
+  // D[row][col] = sum_{k=0}^{3} (row+1)*(col+1) = 4*(row+1)*(col+1).
+  {
+    WaveExecutionState mfma16_state;
+    mfma16_state.exec_mask = ~0ULL;
+
+    // Lane l: row = l%16.
+    // src0 is read from lane (k*16+row) for k=0..3.
+    // We want A[row][k] = row+1 for all k.
+    // So src0[lane] = (lane%16)+1 works since row=lane%16.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      const float a_val = static_cast<float>((lane % 16) + 1);
+      mfma16_state.vgprs[0][lane] = FloatBits(a_val);
+
+      // src1 is read from lane (k*16+col).
+      // We want B[k][col] = col+1 for all k.
+      // So src1[lane] = (lane%16)+1 works since col=lane%16.
+      const float b_val = static_cast<float>((lane % 16) + 1);
+      mfma16_state.vgprs[1][lane] = FloatBits(b_val);
+    }
+
+    // C (accvgprs 4..7) = 0 (default).
+    const std::vector<DecodedInstruction> mfma16_program = {
+        DecodedInstruction::FourOperand(
+            "V_MFMA_F32_16X16X4_F32",
+            InstructionOperand::Accvgpr(0), InstructionOperand::Vgpr(0),
+            InstructionOperand::Vgpr(1), InstructionOperand::Accvgpr(4)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(mfma16_program, &mfma16_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "MFMA 16x16x4 failed: " << error_message << '\n';
+      return 1;
+    }
+
+    // Verify: lane l holds row=l%16, col_group=l/16.
+    // Columns held: [col_group*4 .. col_group*4+3].
+    // D[row][c] = 4*(row+1)*(c+1).
+    bool mfma16_ok = true;
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      const std::size_t row = lane % 16;
+      const std::size_t col_group = lane / 16;
+      for (std::size_t local_col = 0; local_col < 4; ++local_col) {
+        const std::size_t global_col = col_group * 4 + local_col;
+        const float expected =
+            4.0f * static_cast<float>(row + 1) *
+            static_cast<float>(global_col + 1);
+        float actual;
+        std::memcpy(&actual, &mfma16_state.accvgprs[0 + local_col][lane],
+                    sizeof(actual));
+        if (!Expect(actual == expected,
+                    "MFMA 16x16x4 result mismatch")) {
+          std::cerr << "  lane=" << lane << " global_col=" << global_col
+                    << " expected=" << expected << " got=" << actual << '\n';
+          mfma16_ok = false;
+        }
+      }
+    }
+    if (!mfma16_ok) {
+      return 1;
+    }
+  }
+
+  // Test V_MFMA_F32_16X16X4_F32 with accumulation (C != 0).
+  {
+    WaveExecutionState mfma16_acc_state;
+    mfma16_acc_state.exec_mask = ~0ULL;
+
+    // A=1.0, B=1.0 for all lanes.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      mfma16_acc_state.vgprs[0][lane] = FloatBits(1.0f);
+      mfma16_acc_state.vgprs[1][lane] = FloatBits(1.0f);
+    }
+
+    // C (accvgprs 4..7) = 100.0 for all.
+    for (std::size_t col = 0; col < 4; ++col) {
+      for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount;
+           ++lane) {
+        mfma16_acc_state.accvgprs[4 + col][lane] = FloatBits(100.0f);
+      }
+    }
+
+    const std::vector<DecodedInstruction> mfma16_acc_program = {
+        DecodedInstruction::FourOperand(
+            "V_MFMA_F32_16X16X4_F32",
+            InstructionOperand::Accvgpr(0), InstructionOperand::Vgpr(0),
+            InstructionOperand::Vgpr(1), InstructionOperand::Accvgpr(4)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::string error_message;
+    if (!Expect(interpreter.ExecuteProgram(mfma16_acc_program,
+                                           &mfma16_acc_state, &error_message),
+                error_message.c_str())) {
+      std::cerr << "MFMA 16x16x4 accumulate failed\n";
+      return 1;
+    }
+
+    // D[row][col] = C + sum_{k=0}^{3} 1*1 = 100.0 + 4.0 = 104.0.
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      for (std::size_t local_col = 0; local_col < 4; ++local_col) {
+        float actual;
+        std::memcpy(&actual, &mfma16_acc_state.accvgprs[0 + local_col][lane],
+                    sizeof(actual));
+        if (!Expect(actual == 104.0f,
+                    "MFMA 16x16x4 accumulate: expected 104.0")) {
+          std::cerr << "  lane=" << lane << " local_col=" << local_col
+                    << " got=" << actual << '\n';
+          return 1;
+        }
+      }
+    }
+  }
+
+  // Test MFMA compiled path (V_MFMA_F32_4X4X1_16B_F32).
+  {
+    WaveExecutionState mfma_compiled_state;
+    mfma_compiled_state.exec_mask = ~0ULL;
+
+    for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+      mfma_compiled_state.vgprs[0][lane] = FloatBits(2.0f);
+      mfma_compiled_state.vgprs[1][lane] = FloatBits(3.0f);
+    }
+
+    const std::vector<DecodedInstruction> mfma_compiled_program = {
+        DecodedInstruction::FourOperand(
+            "V_MFMA_F32_4X4X1_16B_F32",
+            InstructionOperand::Accvgpr(0), InstructionOperand::Vgpr(0),
+            InstructionOperand::Vgpr(1), InstructionOperand::Accvgpr(4)),
+        DecodedInstruction::Nullary("S_ENDPGM"),
+    };
+
+    std::vector<CompiledInstruction> compiled_mfma;
+    std::string error_message;
+    if (!Expect(interpreter.CompileProgram(mfma_compiled_program,
+                                           &compiled_mfma, &error_message),
+                error_message.c_str())) {
+      std::cerr << "MFMA compile failed\n";
+      return 1;
+    }
+    if (!Expect(interpreter.ExecuteProgram(compiled_mfma,
+                                           &mfma_compiled_state,
+                                           &error_message),
+                error_message.c_str())) {
+      std::cerr << "MFMA compiled execution failed\n";
+      return 1;
+    }
+
+    // A=2.0, B=3.0, C=0 -> D = 2*3 = 6.0 for all elements.
+    for (std::size_t lane = 0; lane < 4; ++lane) {
+      for (std::size_t col = 0; col < 4; ++col) {
+        float actual;
+        std::memcpy(&actual, &mfma_compiled_state.accvgprs[0 + col][lane],
+                    sizeof(actual));
+        if (!Expect(actual == 6.0f,
+                    "MFMA compiled: expected 6.0")) {
+          std::cerr << "  lane=" << lane << " col=" << col
+                    << " got=" << actual << '\n';
+          return 1;
+        }
+      }
+    }
+  }
+
+  std::cerr << "All ACCVGPR and MFMA tests passed.\n";
 
   return 0;
 }

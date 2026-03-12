@@ -14,6 +14,7 @@ namespace mirage::sim::isa {
 enum class OperandKind {
   kSgpr,
   kVgpr,
+  kAccvgpr,
   kImm32,
 };
 
@@ -36,6 +37,15 @@ struct InstructionOperand {
                                  OperandDescriptor descriptor_value = {}) {
     InstructionOperand operand;
     operand.kind = OperandKind::kVgpr;
+    operand.index = index_value;
+    operand.descriptor = descriptor_value;
+    return operand;
+  }
+
+  static InstructionOperand Accvgpr(std::uint16_t index_value,
+                                    OperandDescriptor descriptor_value = {}) {
+    InstructionOperand operand;
+    operand.kind = OperandKind::kAccvgpr;
     operand.index = index_value;
     operand.descriptor = descriptor_value;
     return operand;

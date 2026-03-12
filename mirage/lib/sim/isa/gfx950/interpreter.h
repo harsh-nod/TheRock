@@ -656,6 +656,11 @@ enum class CompiledOpcode : std::uint16_t {
   kSCbranchVccnz,
   kSCbranchExecz,
   kSCbranchExecnz,
+  kVAccvgprReadB32,
+  kVAccvgprWriteB32,
+  kVAccvgprMovB32,
+  kVMfmaF32_4x4x1_16bF32,
+  kVMfmaF32_16x16x4F32,
 };
 
 struct CompiledInstruction {
@@ -841,6 +846,18 @@ class Gfx950Interpreter {
                       const WorkgroupExecutionContext* workgroup,
                       bool* wave_yielded,
                       std::string* error_message) const;
+  bool ExecuteAccvgprMove(const DecodedInstruction& instruction,
+                          WaveExecutionState* state,
+                          std::string* error_message) const;
+  bool ExecuteAccvgprMove(const CompiledInstruction& instruction,
+                          WaveExecutionState* state,
+                          std::string* error_message) const;
+  bool ExecuteMfma(const DecodedInstruction& instruction,
+                   WaveExecutionState* state,
+                   std::string* error_message) const;
+  bool ExecuteMfma(const CompiledInstruction& instruction,
+                   WaveExecutionState* state,
+                   std::string* error_message) const;
 
   bool ValidateOperandCount(const DecodedInstruction& instruction,
                             std::uint8_t expected_operands,
@@ -887,6 +904,11 @@ class Gfx950Interpreter {
                           std::uint32_t value,
                           WaveExecutionState* state,
                           std::string* error_message) const;
+  bool WriteAccvgprOperand(const InstructionOperand& operand,
+                           std::size_t lane_index,
+                           std::uint32_t value,
+                           WaveExecutionState* state,
+                           std::string* error_message) const;
   bool ApplyRelativeBranch(std::int32_t delta_in_instructions,
                            WaveExecutionState* state,
                            bool* pc_was_updated,

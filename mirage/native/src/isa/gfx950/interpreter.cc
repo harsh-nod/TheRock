@@ -3665,6 +3665,16 @@ bool IsBranchOpcode(std::string_view opcode) {
 
 bool IsBarrierOpcode(std::string_view opcode) { return opcode == "S_BARRIER"; }
 
+bool IsAccvgprOpcode(std::string_view opcode) {
+  return opcode == "V_ACCVGPR_READ" || opcode == "V_ACCVGPR_WRITE" ||
+         opcode == "V_ACCVGPR_MOV_B32";
+}
+
+bool IsMfmaOpcode(std::string_view opcode) {
+  return opcode == "V_MFMA_F32_4X4X1_16B_F32" ||
+         opcode == "V_MFMA_F32_16X16X4_F32";
+}
+
 std::size_t FindLowestActiveLane(std::uint64_t exec_mask) {
   if (exec_mask == 0) {
     return WaveExecutionState::kLaneCount;
@@ -7612,6 +7622,27 @@ bool TryCompileOpcode(std::string_view opcode,
     return true;
   }
 
+  if (opcode == "V_ACCVGPR_READ") {
+    compiled_instruction->opcode = CompiledOpcode::kVAccvgprReadB32;
+    return true;
+  }
+  if (opcode == "V_ACCVGPR_WRITE") {
+    compiled_instruction->opcode = CompiledOpcode::kVAccvgprWriteB32;
+    return true;
+  }
+  if (opcode == "V_ACCVGPR_MOV_B32") {
+    compiled_instruction->opcode = CompiledOpcode::kVAccvgprMovB32;
+    return true;
+  }
+  if (opcode == "V_MFMA_F32_4X4X1_16B_F32") {
+    compiled_instruction->opcode = CompiledOpcode::kVMfmaF32_4x4x1_16bF32;
+    return true;
+  }
+  if (opcode == "V_MFMA_F32_16X16X4_F32") {
+    compiled_instruction->opcode = CompiledOpcode::kVMfmaF32_16x16x4F32;
+    return true;
+  }
+
   return false;
 }
 
@@ -7633,7 +7664,8 @@ bool Gfx950Interpreter::Supports(std::string_view opcode) const {
          IsVectorCompareOpcode(opcode) ||
          IsVectorMemoryOpcode(opcode) ||
          IsDsOpcode(opcode) || IsVectorAtomicOpcode(opcode) ||
-         IsBranchOpcode(opcode) || IsBarrierOpcode(opcode);
+         IsBranchOpcode(opcode) || IsBarrierOpcode(opcode) ||
+         IsAccvgprOpcode(opcode) || IsMfmaOpcode(opcode);
 }
 
 bool Gfx950Interpreter::CompileProgram(
@@ -7923,6 +7955,12 @@ bool Gfx950Interpreter::ExecuteInstruction(const DecodedInstruction& instruction
   }
   if (IsBranchOpcode(instruction.opcode)) {
     return ExecuteBranch(instruction, state, pc_was_updated, error_message);
+  }
+  if (IsAccvgprOpcode(instruction.opcode)) {
+    return ExecuteAccvgprMove(instruction, state, error_message);
+  }
+  if (IsMfmaOpcode(instruction.opcode)) {
+    return ExecuteMfma(instruction, state, error_message);
   }
 
   if (error_message != nullptr) {
@@ -8602,6 +8640,13 @@ bool Gfx950Interpreter::ExecuteInstruction(const CompiledInstruction& instructio
     case CompiledOpcode::kSCbranchExecz:
     case CompiledOpcode::kSCbranchExecnz:
       return ExecuteBranch(instruction, state, pc_was_updated, error_message);
+    case CompiledOpcode::kVAccvgprReadB32:
+    case CompiledOpcode::kVAccvgprWriteB32:
+    case CompiledOpcode::kVAccvgprMovB32:
+      return ExecuteAccvgprMove(instruction, state, error_message);
+    case CompiledOpcode::kVMfmaF32_4x4x1_16bF32:
+    case CompiledOpcode::kVMfmaF32_16x16x4F32:
+      return ExecuteMfma(instruction, state, error_message);
   }
 
   if (error_message != nullptr) {
@@ -14868,6 +14913,15 @@ std::uint32_t Gfx950Interpreter::ReadVectorOperand(
     }
     return state.vgprs[operand.index][lane_index];
   }
+  if (operand.kind == OperandKind::kAccvgpr) {
+    if (operand.index >= state.accvgprs.size()) {
+      if (error_message != nullptr) {
+        *error_message = "ACCVGPR register index out of range";
+      }
+      return 0;
+    }
+    return state.accvgprs[operand.index][lane_index];
+  }
   if (operand.kind == OperandKind::kSgpr) {
     return ReadScalarOperand(operand, state, error_message);
   }
@@ -15093,6 +15147,31 @@ bool Gfx950Interpreter::WriteVectorOperand(const InstructionOperand& operand,
   return true;
 }
 
+bool Gfx950Interpreter::WriteAccvgprOperand(
+    const InstructionOperand& operand,
+    std::size_t lane_index,
+    std::uint32_t value,
+    WaveExecutionState* state,
+    std::string* error_message) const {
+  if (operand.kind != OperandKind::kAccvgpr) {
+    if (error_message != nullptr) {
+      *error_message = "expected ACCVGPR destination operand";
+    }
+    return false;
+  }
+  if (operand.index >= state->accvgprs.size()) {
+    if (error_message != nullptr) {
+      *error_message = "ACCVGPR destination out of range";
+    }
+    return false;
+  }
+  if (error_message != nullptr) {
+    error_message->clear();
+  }
+  state->accvgprs[operand.index][lane_index] = value;
+  return true;
+}
+
 bool Gfx950Interpreter::ApplyRelativeBranch(std::int32_t delta_in_instructions,
                                             WaveExecutionState* state,
                                             bool* pc_was_updated,
@@ -15235,6 +15314,297 @@ bool Gfx950Interpreter::WriteMemoryU32(ExecutionMemory* memory,
     return false;
   }
   return true;
+}
+
+// --- ACCVGPR data movement ---
+
+bool Gfx950Interpreter::ExecuteAccvgprMove(
+    const DecodedInstruction& instruction,
+    WaveExecutionState* state,
+    std::string* error_message) const {
+  if (!ValidateOperandCount(instruction, 2, error_message)) {
+    return false;
+  }
+
+  for (std::size_t lane_index = 0;
+       lane_index < WaveExecutionState::kLaneCount; ++lane_index) {
+    if (((state->exec_mask >> lane_index) & 1ULL) == 0) {
+      continue;
+    }
+
+    if (instruction.opcode == "V_ACCVGPR_READ") {
+      // dst_vgpr = accvgpr[src]
+      const std::uint32_t value =
+          ReadVectorOperand(instruction.operands[1], *state, lane_index,
+                            error_message);
+      if (error_message != nullptr && !error_message->empty()) {
+        return false;
+      }
+      if (!WriteVectorOperand(instruction.operands[0], lane_index, value,
+                              state, error_message)) {
+        return false;
+      }
+    } else if (instruction.opcode == "V_ACCVGPR_WRITE") {
+      // accvgpr[dst] = src
+      const std::uint32_t value =
+          ReadVectorOperand(instruction.operands[1], *state, lane_index,
+                            error_message);
+      if (error_message != nullptr && !error_message->empty()) {
+        return false;
+      }
+      if (!WriteAccvgprOperand(instruction.operands[0], lane_index, value,
+                               state, error_message)) {
+        return false;
+      }
+    } else if (instruction.opcode == "V_ACCVGPR_MOV_B32") {
+      // accvgpr[dst] = accvgpr[src]
+      const std::uint32_t value =
+          ReadVectorOperand(instruction.operands[1], *state, lane_index,
+                            error_message);
+      if (error_message != nullptr && !error_message->empty()) {
+        return false;
+      }
+      if (!WriteAccvgprOperand(instruction.operands[0], lane_index, value,
+                               state, error_message)) {
+        return false;
+      }
+    } else {
+      if (error_message != nullptr) {
+        *error_message = "unsupported ACCVGPR opcode";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Gfx950Interpreter::ExecuteAccvgprMove(
+    const CompiledInstruction& instruction,
+    WaveExecutionState* state,
+    std::string* error_message) const {
+  if (!ValidateOperandCount(instruction, 2, error_message)) {
+    return false;
+  }
+
+  for (std::size_t lane_index = 0;
+       lane_index < WaveExecutionState::kLaneCount; ++lane_index) {
+    if (((state->exec_mask >> lane_index) & 1ULL) == 0) {
+      continue;
+    }
+
+    if (instruction.opcode == CompiledOpcode::kVAccvgprReadB32) {
+      const std::uint32_t value =
+          ReadVectorOperand(instruction.operands[1], *state, lane_index,
+                            error_message);
+      if (error_message != nullptr && !error_message->empty()) {
+        return false;
+      }
+      if (!WriteVectorOperand(instruction.operands[0], lane_index, value,
+                              state, error_message)) {
+        return false;
+      }
+    } else if (instruction.opcode == CompiledOpcode::kVAccvgprWriteB32) {
+      const std::uint32_t value =
+          ReadVectorOperand(instruction.operands[1], *state, lane_index,
+                            error_message);
+      if (error_message != nullptr && !error_message->empty()) {
+        return false;
+      }
+      if (!WriteAccvgprOperand(instruction.operands[0], lane_index, value,
+                               state, error_message)) {
+        return false;
+      }
+    } else if (instruction.opcode == CompiledOpcode::kVAccvgprMovB32) {
+      const std::uint32_t value =
+          ReadVectorOperand(instruction.operands[1], *state, lane_index,
+                            error_message);
+      if (error_message != nullptr && !error_message->empty()) {
+        return false;
+      }
+      if (!WriteAccvgprOperand(instruction.operands[0], lane_index, value,
+                               state, error_message)) {
+        return false;
+      }
+    } else {
+      if (error_message != nullptr) {
+        *error_message = "unsupported compiled ACCVGPR opcode";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+// --- MFMA (Matrix Fused Multiply-Add) ---
+
+namespace {
+
+// Execute V_MFMA_F32_4X4X1_16B_F32: 16 independent 4x4 blocks.
+// Block b = lane/4, row = lane%4.
+// A[row] = src0[b*4+row], B[col] = src1[b*4+col].
+// D[row][col] = C[row][col] + A[row] * B[col], col=0..3.
+// Each lane writes 4 dwords to accvgprs[dst_base+0..3][lane].
+bool ExecuteMfma4x4x1(
+    const std::array<InstructionOperand, DecodedInstruction::kMaxOperands>& operands,
+    WaveExecutionState* state,
+    const float* all_src0,
+    const float* all_src1,
+    std::string* error_message) {
+  const std::uint16_t dst_base = operands[0].index;
+  const std::uint16_t c_base = operands[3].index;
+
+  for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+    if (((state->exec_mask >> lane) & 1ULL) == 0) {
+      continue;
+    }
+
+    const std::size_t block = lane / 4;
+    const std::size_t row = lane % 4;
+    const float a_val = all_src0[block * 4 + row];
+
+    for (std::size_t col = 0; col < 4; ++col) {
+      const float b_val = all_src1[block * 4 + col];
+
+      // Read accumulator C[row][col] from accvgpr[c_base + col][lane].
+      const float c_val = BitCast<float>(
+          state->accvgprs[c_base + col][lane]);
+
+      const float d_val = c_val + a_val * b_val;
+      state->accvgprs[dst_base + col][lane] = BitCast<std::uint32_t>(d_val);
+    }
+  }
+  return true;
+}
+
+// Execute V_MFMA_F32_16X16X4_F32: single 16x16 tile, K=4.
+// Lane l: row = l%16, col_group = l/16 (0..3).
+// Lane holds columns [col_group*4 .. col_group*4+3] of its row.
+// For k=0..3:
+//   A[row][k] = src0[k*16 + row], B[k][col] = src1[k*16 + col].
+// D[row][c] = C[row][c] + sum_{k=0}^{3} A[row][k] * B[k][c].
+// Each lane writes 4 dwords to accvgprs[dst_base+0..3][lane].
+bool ExecuteMfma16x16x4(
+    const std::array<InstructionOperand, DecodedInstruction::kMaxOperands>& operands,
+    WaveExecutionState* state,
+    const float* all_src0,
+    const float* all_src1,
+    std::string* error_message) {
+  const std::uint16_t dst_base = operands[0].index;
+  const std::uint16_t c_base = operands[3].index;
+
+  for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+    if (((state->exec_mask >> lane) & 1ULL) == 0) {
+      continue;
+    }
+
+    const std::size_t row = lane % 16;
+    const std::size_t col_group = lane / 16;
+
+    for (std::size_t local_col = 0; local_col < 4; ++local_col) {
+      const std::size_t global_col = col_group * 4 + local_col;
+
+      // Read accumulator C value.
+      const float c_val = BitCast<float>(
+          state->accvgprs[c_base + local_col][lane]);
+
+      // Accumulate over K=4 outer products.
+      float sum = c_val;
+      for (std::size_t k = 0; k < 4; ++k) {
+        const float a_val = all_src0[k * 16 + row];
+        const float b_val = all_src1[k * 16 + global_col];
+        sum += a_val * b_val;
+      }
+
+      state->accvgprs[dst_base + local_col][lane] = BitCast<std::uint32_t>(sum);
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+bool Gfx950Interpreter::ExecuteMfma(
+    const DecodedInstruction& instruction,
+    WaveExecutionState* state,
+    std::string* error_message) const {
+  // MFMA format: op[0]=Accvgpr(dst_base), op[1]=Vgpr(a),
+  //              op[2]=Vgpr(b), op[3]=Accvgpr(c_base)
+  if (!ValidateOperandCount(instruction, 4, error_message)) {
+    return false;
+  }
+
+  // Read all 64 lanes' src0/src1 into float arrays.
+  // Cross-lane: every lane may need values from any other lane.
+  float all_src0[WaveExecutionState::kLaneCount];
+  float all_src1[WaveExecutionState::kLaneCount];
+  for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+    const std::uint32_t v0 =
+        ReadVectorOperand(instruction.operands[1], *state, lane, error_message);
+    if (error_message != nullptr && !error_message->empty()) {
+      return false;
+    }
+    const std::uint32_t v1 =
+        ReadVectorOperand(instruction.operands[2], *state, lane, error_message);
+    if (error_message != nullptr && !error_message->empty()) {
+      return false;
+    }
+    all_src0[lane] = BitCast<float>(v0);
+    all_src1[lane] = BitCast<float>(v1);
+  }
+
+  if (instruction.opcode == "V_MFMA_F32_4X4X1_16B_F32") {
+    return ExecuteMfma4x4x1(instruction.operands, state, all_src0, all_src1,
+                            error_message);
+  }
+  if (instruction.opcode == "V_MFMA_F32_16X16X4_F32") {
+    return ExecuteMfma16x16x4(instruction.operands, state, all_src0, all_src1,
+                              error_message);
+  }
+
+  if (error_message != nullptr) {
+    *error_message = "unsupported MFMA variant";
+  }
+  return false;
+}
+
+bool Gfx950Interpreter::ExecuteMfma(
+    const CompiledInstruction& instruction,
+    WaveExecutionState* state,
+    std::string* error_message) const {
+  if (!ValidateOperandCount(instruction, 4, error_message)) {
+    return false;
+  }
+
+  float all_src0[WaveExecutionState::kLaneCount];
+  float all_src1[WaveExecutionState::kLaneCount];
+  for (std::size_t lane = 0; lane < WaveExecutionState::kLaneCount; ++lane) {
+    const std::uint32_t v0 =
+        ReadVectorOperand(instruction.operands[1], *state, lane, error_message);
+    if (error_message != nullptr && !error_message->empty()) {
+      return false;
+    }
+    const std::uint32_t v1 =
+        ReadVectorOperand(instruction.operands[2], *state, lane, error_message);
+    if (error_message != nullptr && !error_message->empty()) {
+      return false;
+    }
+    all_src0[lane] = BitCast<float>(v0);
+    all_src1[lane] = BitCast<float>(v1);
+  }
+
+  if (instruction.opcode == CompiledOpcode::kVMfmaF32_4x4x1_16bF32) {
+    return ExecuteMfma4x4x1(instruction.operands, state, all_src0, all_src1,
+                            error_message);
+  }
+  if (instruction.opcode == CompiledOpcode::kVMfmaF32_16x16x4F32) {
+    return ExecuteMfma16x16x4(instruction.operands, state, all_src0, all_src1,
+                              error_message);
+  }
+
+  if (error_message != nullptr) {
+    *error_message = "unsupported compiled MFMA variant";
+  }
+  return false;
 }
 
 }  // namespace mirage::sim::isa
