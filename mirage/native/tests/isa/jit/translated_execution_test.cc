@@ -376,6 +376,98 @@ bool TestMultipleTranslatedDispatches() {
                 "expected s0 = 11 after two dispatches (5+3+3)");
 }
 
+// Test: EXEC mask narrowing for wave32-in-wave64.
+//   Caller passes a full 64-bit exec mask (~0ULL), but because the
+//   source arch is gfx1201 (wave32), the translator should narrow the
+//   EXEC mask to 32 lanes.  Lanes 32+ should be untouched.
+//   v1 = v0 + v0  (V_ADD_F32)
+//   v0 lanes 0..63: lane index as float
+//   Expected: v1 lanes 0..31 = 2*lane, v1 lanes 32..63 = 0 (inactive)
+bool TestExecMaskNarrowingWave32() {
+  auto sim = MakeSimulator();
+  const auto queue_id = sim.CreateComputeQueue();
+
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Binary("V_ADD_F32",
+                                 InstructionOperand::Vgpr(1),
+                                 InstructionOperand::Vgpr(0),
+                                 InstructionOperand::Vgpr(0)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  constexpr std::size_t kLanes = WaveExecutionState::kLaneCount;
+  // 2 VGPRs: v0 (input) and v1 (output)
+  std::vector<std::uint32_t> vgpr_state(2 * kLanes, 0u);
+
+  auto to_u32 = [](float f) -> std::uint32_t {
+    std::uint32_t u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+  };
+  auto to_f32 = [](std::uint32_t u) -> float {
+    float f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+  };
+
+  // Fill v0 for all 64 lanes with lane index as float.
+  for (std::size_t lane = 0; lane < kLanes; ++lane) {
+    vgpr_state[0 * kLanes + lane] = to_u32(static_cast<float>(lane));
+  }
+
+  const auto vgpr_alloc = sim.AllocateMemory(memory::MemoryRegionKind::kHbm,
+                                             vgpr_state.size() * sizeof(vgpr_state[0]));
+  if (!Expect(vgpr_alloc.mapped_va != 0, "expected vgpr allocation") ||
+      !Expect(sim.WriteMemory(vgpr_alloc.mapped_va, AsBytes(vgpr_state)),
+              "expected vgpr write")) {
+    return false;
+  }
+
+  exec::SyntheticDispatchPacket packet;
+  packet.context.queue_id = queue_id;
+  packet.opcode = exec::SyntheticKernelOpcode::kGfx1201TranslatedProgram;
+  packet.args.vgpr_state_va = vgpr_alloc.mapped_va;
+  packet.args.vgpr_state_count = 2;
+  // Intentionally pass full 64-bit mask; narrowing should restrict to 32.
+  packet.args.exec_mask = ~0ULL;
+
+  const auto completion = sim.SubmitTranslatedProgram(
+      queue_id, packet, program, DefaultTranslationConfig());
+
+  if (!Expect(completion.completed, "expected dispatch to complete") ||
+      !Expect(completion.success, "expected dispatch to succeed")) {
+    return false;
+  }
+
+  std::vector<std::uint32_t> result(vgpr_state.size(), 0u);
+  if (!Expect(sim.ReadMemory(vgpr_alloc.mapped_va, AsWritableBytes(result)),
+              "expected vgpr readback")) {
+    return false;
+  }
+
+  bool ok = true;
+  // Lanes 0..31 should have v1 = v0 + v0 = 2 * lane.
+  for (std::size_t lane = 0; lane < 32; ++lane) {
+    const float expected = static_cast<float>(lane * 2);
+    const float actual = to_f32(result[1 * kLanes + lane]);
+    if (actual != expected) {
+      std::cerr << "FAIL: v1 lane " << lane << " expected " << expected
+                << " got " << actual << '\n';
+      ok = false;
+    }
+  }
+  // Lanes 32..63 should still be 0 (untouched by narrowed EXEC).
+  for (std::size_t lane = 32; lane < kLanes; ++lane) {
+    const float actual = to_f32(result[1 * kLanes + lane]);
+    if (actual != 0.0f) {
+      std::cerr << "FAIL: v1 lane " << lane << " expected 0 got "
+                << actual << " (should be inactive)\n";
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -414,6 +506,12 @@ int main() {
   m = TestMultipleTranslatedDispatches();
   ok = m && ok;
   std::cerr << (m ? "PASS" : "FAIL") << '\n';
+
+  bool e = true;
+  std::cerr << "TestExecMaskNarrowingWave32... ";
+  e = TestExecMaskNarrowingWave32();
+  ok = e && ok;
+  std::cerr << (e ? "PASS" : "FAIL") << '\n';
 
   if (ok) {
     std::cerr << "All translated_execution tests passed.\n";

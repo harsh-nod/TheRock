@@ -72,6 +72,9 @@ struct TranslationResult {
   std::vector<InstructionDiagnostic> diagnostics;
   CapabilitySummary capability_summary;
   bool is_executable = false;
+  // True when the source program was wave32 and the target is wave64.
+  // The caller must narrow the EXEC mask to 32 lanes before execution.
+  bool requires_exec_narrowing = false;
 };
 
 class CrossArchTranslator {

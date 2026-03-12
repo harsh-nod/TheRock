@@ -199,6 +199,38 @@ bool TestCacheKeyOrdering() {
          Expect(!(key1 < key1), "key should not be less than itself");
 }
 
+bool TestExecNarrowingFlagSet() {
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  // gfx1201 (wave32) -> gfx950 (wave64): should require narrowing.
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx1201;
+  config.target_arch = TargetArchitecture::kGfx950;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program);
+
+  bool ok = Expect(result.is_executable, "program should be executable") &&
+            Expect(result.requires_exec_narrowing,
+                   "gfx1201->gfx950 should require exec narrowing");
+
+  // Non-executable program should not have narrowing flag set.
+  std::vector<DecodedInstruction> bad_program = {
+      DecodedInstruction::Nullary("UNSUPPORTED_OP"),
+  };
+
+  TranslationResult bad_result = translator.Translate(bad_program);
+
+  ok = Expect(!bad_result.is_executable,
+              "unsupported program should not be executable") &&
+       Expect(!bad_result.requires_exec_narrowing,
+              "non-executable program should not require narrowing") && ok;
+
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -211,6 +243,7 @@ int main() {
   ok = TestCoverageReport() && ok;
   ok = TestArchitectureNames() && ok;
   ok = TestCacheKeyOrdering() && ok;
+  ok = TestExecNarrowingFlagSet() && ok;
 
   if (ok) {
     std::cerr << "All cross_arch_translator tests passed.\n";

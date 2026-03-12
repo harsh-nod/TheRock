@@ -116,6 +116,7 @@ TranslationResult CrossArchTranslator::Translate(
     ApplyBranchFixup(&result.translated_program, result.diagnostics);
     result.top_level_status = TranslationStatus::kRewrittenWithFixup;
     result.is_executable = true;
+    result.requires_exec_narrowing = wave_adapter_.RequiresExecNarrowing();
   } else if (config_.translation_mode == TranslationMode::kCoverageOnly) {
     result.top_level_status = TranslationStatus::kCoverageOnly;
     result.is_executable = false;

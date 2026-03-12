@@ -593,8 +593,16 @@ exec::CompletionRecord SingleGpuSimulator::SubmitTranslatedProgram(
     return completion;
   }
 
+  // When translating wave32→wave64, narrow the EXEC mask so that only
+  // the lower 32 lanes are active on the wave64 target.
+  exec::SyntheticDispatchPacket exec_packet = packet;
+  if (translation.requires_exec_narrowing) {
+    exec_packet.args.exec_mask =
+        isa::jit::WaveAdapter::NarrowExecMask(exec_packet.args.exec_mask);
+  }
+
   // Execute through the standard gfx950 wave execution loop.
-  completion.success = ExecuteCompiledGfx950Program(packet, compiled_program);
+  completion.success = ExecuteCompiledGfx950Program(exec_packet, compiled_program);
   device_.RetireTo(queue_id, next_write_ptr);
   return completion;
 }

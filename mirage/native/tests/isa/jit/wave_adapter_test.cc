@@ -118,6 +118,57 @@ bool TestRejectPolicy() {
                 "reject policy should not reject non-wave-sensitive ops");
 }
 
+bool TestExecNarrowingRequired() {
+  WaveAdapter adapter_1201_950(WaveAdapter::kGfx1201VccSgpr,
+                               WaveAdapter::kGfx950VccSgpr,
+                               WavePolicy::kWave32InWave64);
+
+  WaveAdapter adapter_1250_950(WaveAdapter::kGfx1250VccSgpr,
+                               WaveAdapter::kGfx950VccSgpr,
+                               WavePolicy::kWave32InWave64);
+
+  WaveAdapter adapter_same(WaveAdapter::kGfx950VccSgpr,
+                           WaveAdapter::kGfx950VccSgpr,
+                           WavePolicy::kWave32InWave64);
+
+  WaveAdapter adapter_reverse(WaveAdapter::kGfx950VccSgpr,
+                              WaveAdapter::kGfx1201VccSgpr,
+                              WavePolicy::kWave32InWave64);
+
+  return Expect(adapter_1201_950.RequiresExecNarrowing(),
+                "gfx1201->gfx950 should require exec narrowing") &&
+         Expect(adapter_1250_950.RequiresExecNarrowing(),
+                "gfx1250->gfx950 should require exec narrowing") &&
+         Expect(!adapter_same.RequiresExecNarrowing(),
+                "gfx950->gfx950 should not require exec narrowing") &&
+         Expect(!adapter_reverse.RequiresExecNarrowing(),
+                "gfx950->gfx1201 should not require exec narrowing");
+}
+
+bool TestNarrowExecMask() {
+  // Full 64-bit mask should be narrowed to lower 32 bits.
+  const std::uint64_t full = ~0ULL;
+  const std::uint64_t narrowed = WaveAdapter::NarrowExecMask(full);
+  bool ok = Expect(narrowed == 0x00000000FFFFFFFFULL,
+                   "full mask narrowed to wave32");
+
+  // Already-narrow mask should be unchanged.
+  const std::uint64_t wave32_mask = 0x0000000000000FULL;
+  ok = Expect(WaveAdapter::NarrowExecMask(wave32_mask) == wave32_mask,
+              "wave32 mask unchanged after narrowing") && ok;
+
+  // Mask with upper bits set should have them cleared.
+  const std::uint64_t mixed = 0xFFFFFFFF0000000FULL;
+  ok = Expect(WaveAdapter::NarrowExecMask(mixed) == 0x000000000000000FULL,
+              "upper 32 bits cleared by narrowing") && ok;
+
+  // Zero mask stays zero.
+  ok = Expect(WaveAdapter::NarrowExecMask(0) == 0,
+              "zero mask stays zero") && ok;
+
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -128,6 +179,8 @@ int main() {
   ok = TestNoRemapWhenSameArch() && ok;
   ok = TestWaveSensitiveDetection() && ok;
   ok = TestRejectPolicy() && ok;
+  ok = TestExecNarrowingRequired() && ok;
+  ok = TestNarrowExecMask() && ok;
 
   if (ok) {
     std::cerr << "All wave_adapter tests passed.\n";
