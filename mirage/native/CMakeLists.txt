@@ -17,6 +17,8 @@ add_library(mirage_sim_core STATIC
   src/isa/gfx950/binary_decoder.cc
   src/mirage_sim_core.cc
   src/isa/gfx950/interpreter.cc
+  src/isa/jit/translation_rules.cc
+  src/isa/jit/semantic_lowering.cc
   src/simdojo_dispatch_harness.cc
   src/single_gpu_simulator.cc
   src/virtual_gpu_device.cc
@@ -82,3 +84,10 @@ add_test(NAME mirage_sim_core_test COMMAND mirage_sim_core_test)
 add_test(NAME mirage_gfx950_runtime_test COMMAND mirage_gfx950_runtime_test)
 add_test(NAME mirage_simdojo_dispatch_harness_test COMMAND mirage_simdojo_dispatch_harness_test)
 add_test(NAME mirage_simdojo_smoke_test COMMAND mirage_simdojo_smoke_test)
+
+add_executable(mirage_jit_translation_rules_test
+  tests/isa/jit/translation_rules_test.cc
+)
+target_link_libraries(mirage_jit_translation_rules_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_jit_translation_rules_test COMMAND mirage_jit_translation_rules_test)
