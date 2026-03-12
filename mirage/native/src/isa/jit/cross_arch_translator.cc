@@ -203,6 +203,58 @@ CapabilitySummary CrossArchTranslator::ComputeCoverage(
   return summary;
 }
 
+TranslationStatus CrossArchTranslator::ClassifyInstructionWithSemantic(
+    std::string_view opcode) const {
+  // First try the fast path via the rule table.
+  TranslationStatus rule_status = ClassifyInstruction(opcode);
+  if (rule_status != TranslationStatus::kUnsupported) {
+    return rule_status;
+  }
+
+  // Fall through to semantic classification for opcodes without a
+  // direct rule-table entry.
+  SemanticInstruction semantic;
+  semantic.opcode = opcode;
+  semantic.source_arch = static_cast<std::uint8_t>(config_.source_arch);
+  semantic.family = ClassifyOpcodeFamily(opcode);
+
+  // Populate prerequisites based on family.
+  DecodedInstruction decoded = DecodedInstruction::Nullary(opcode);
+  semantic_lowering_.LiftFromDecoded(
+      decoded, static_cast<std::uint8_t>(config_.source_arch), &semantic);
+
+  return semantic_lowering_.ClassifyForLowering(semantic);
+}
+
+CapabilitySummary CrossArchTranslator::ComputeCoverageWithSemantic(
+    std::span<const DecodedInstruction> source_program) const {
+  CapabilitySummary summary;
+  for (const auto& instr : source_program) {
+    TranslationStatus status =
+        ClassifyInstructionWithSemantic(instr.opcode);
+    switch (status) {
+      case TranslationStatus::kIdentity:
+      case TranslationStatus::kRenamed:
+      case TranslationStatus::kRewrittenWithFixup:
+        summary.executable_count++;
+        break;
+      case TranslationStatus::kCoverageOnly:
+        summary.coverage_only_count++;
+        break;
+      case TranslationStatus::kBlockedOnRuntime:
+        summary.blocked_on_runtime_count++;
+        break;
+      case TranslationStatus::kRequiresSemanticLowering:
+        summary.coverage_only_count++;
+        break;
+      case TranslationStatus::kUnsupported:
+        summary.unsupported_count++;
+        break;
+    }
+  }
+  return summary;
+}
+
 std::string_view CrossArchTranslator::ArchitectureName(
     SourceArchitecture arch) {
   switch (arch) {

@@ -123,3 +123,10 @@ add_test(NAME mirage_jit_branch_fixup_test COMMAND mirage_jit_branch_fixup_test)
 add_test(NAME mirage_jit_wave_adapter_test COMMAND mirage_jit_wave_adapter_test)
 add_test(NAME mirage_jit_translation_coverage_test COMMAND mirage_jit_translation_coverage_test)
 add_test(NAME mirage_jit_translated_execution_test COMMAND mirage_jit_translated_execution_test)
+
+add_executable(mirage_jit_semantic_lowering_test
+  tests/isa/jit/semantic_lowering_test.cc
+)
+target_link_libraries(mirage_jit_semantic_lowering_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_jit_semantic_lowering_test COMMAND mirage_jit_semantic_lowering_test)

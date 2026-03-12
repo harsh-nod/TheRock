@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "lib/sim/isa/common/decoded_instruction.h"
+#include "lib/sim/isa/jit/semantic_lowering.h"
 #include "lib/sim/isa/jit/translation_diagnostics.h"
 #include "lib/sim/isa/jit/translation_rules.h"
 #include "lib/sim/isa/jit/wave_adapter.h"
@@ -103,8 +104,23 @@ class CrossArchTranslator {
   TranslationStatus ClassifyInstruction(
       std::string_view opcode) const;
 
+  // Extended classification that uses the semantic IR path for opcodes
+  // without a direct rule-table entry.  Produces richer 4-bucket results
+  // (executable, coverage-only, blocked-on-runtime, unsupported).
+  TranslationStatus ClassifyInstructionWithSemantic(
+      std::string_view opcode) const;
+
   CapabilitySummary ComputeCoverage(
       std::span<const DecodedInstruction> source_program) const;
+
+  // Extended coverage that uses the semantic IR path for opcodes that
+  // are not directly translatable, providing the full 4-bucket report.
+  CapabilitySummary ComputeCoverageWithSemantic(
+      std::span<const DecodedInstruction> source_program) const;
+
+  const SemanticLowering& semantic_lowering() const {
+    return semantic_lowering_;
+  }
 
   static std::string_view ArchitectureName(SourceArchitecture arch);
   static std::string_view ArchitectureName(TargetArchitecture arch);
@@ -132,6 +148,7 @@ class CrossArchTranslator {
   TranslationConfig config_;
   TranslationRuleTable rule_table_;
   WaveAdapter wave_adapter_;
+  SemanticLowering semantic_lowering_;
 };
 
 }  // namespace mirage::sim::isa::jit
