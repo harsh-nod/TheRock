@@ -232,4 +232,18 @@ std::span<const std::string_view> GetExecManipulatingOpcodes() {
   return kExecManipulatingOpcodes;
 }
 
+bool IsLdsTouchingOpcode(std::string_view opcode) {
+  // Must start with "DS_" prefix.
+  if (opcode.size() < 3 || opcode.substr(0, 3) != "DS_") {
+    return false;
+  }
+  // Lane routing opcodes use the DS hardware but do NOT access LDS memory.
+  if (opcode == "DS_PERMUTE_B32" || opcode == "DS_BPERMUTE_B32" ||
+      opcode == "DS_SWIZZLE_B32" || opcode == "DS_BPERMUTE_FI_B32" ||
+      opcode == "DS_NOP") {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace mirage::sim::isa::jit

@@ -271,6 +271,49 @@ bool TestExecManipulatingFlagSet() {
   return ok;
 }
 
+bool TestLdsDetectionFlagSet() {
+  // Program with LDS instruction should set contains_lds_instructions
+  // and should NOT be executable (DS_READ_B32 has no translation rule).
+  std::vector<DecodedInstruction> program_with_lds = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(0)),
+      DecodedInstruction::Unary("DS_READ_B32",
+                                InstructionOperand::Vgpr(0),
+                                InstructionOperand::Vgpr(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx1201;
+  config.target_arch = TargetArchitecture::kGfx950;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program_with_lds);
+
+  bool ok = Expect(!result.is_executable,
+                   "program with LDS should not be executable") &&
+            Expect(result.contains_lds_instructions,
+                   "program with DS_READ_B32 should flag LDS usage");
+
+  // Program without LDS should not set the flag.
+  std::vector<DecodedInstruction> program_no_lds = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationResult result2 = translator.Translate(program_no_lds);
+
+  ok = Expect(result2.is_executable,
+              "program without LDS should be executable") &&
+       Expect(!result2.contains_lds_instructions,
+              "program without DS ops should not flag LDS") && ok;
+
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -285,6 +328,7 @@ int main() {
   ok = TestCacheKeyOrdering() && ok;
   ok = TestExecNarrowingFlagSet() && ok;
   ok = TestExecManipulatingFlagSet() && ok;
+  ok = TestLdsDetectionFlagSet() && ok;
 
   if (ok) {
     std::cerr << "All cross_arch_translator tests passed.\n";

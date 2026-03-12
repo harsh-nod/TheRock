@@ -114,6 +114,36 @@ bool TestWaveSensitiveOpcodes() {
          Expect(found_permute, "DS_PERMUTE_B32 should be wave-sensitive");
 }
 
+bool TestLdsTouchingOpcodeDetection() {
+  // LDS-touching DS opcodes.
+  return Expect(IsLdsTouchingOpcode("DS_READ_B32"),
+                "DS_READ_B32 should touch LDS") &&
+         Expect(IsLdsTouchingOpcode("DS_WRITE_B32"),
+                "DS_WRITE_B32 should touch LDS") &&
+         Expect(IsLdsTouchingOpcode("DS_READ_B64"),
+                "DS_READ_B64 should touch LDS") &&
+         Expect(IsLdsTouchingOpcode("DS_ADD_U32"),
+                "DS_ADD_U32 should touch LDS") &&
+         Expect(IsLdsTouchingOpcode("DS_WRITE2_B32"),
+                "DS_WRITE2_B32 should touch LDS") &&
+         // Lane routing opcodes: NOT LDS-touching.
+         Expect(!IsLdsTouchingOpcode("DS_PERMUTE_B32"),
+                "DS_PERMUTE_B32 should NOT touch LDS") &&
+         Expect(!IsLdsTouchingOpcode("DS_BPERMUTE_B32"),
+                "DS_BPERMUTE_B32 should NOT touch LDS") &&
+         Expect(!IsLdsTouchingOpcode("DS_SWIZZLE_B32"),
+                "DS_SWIZZLE_B32 should NOT touch LDS") &&
+         Expect(!IsLdsTouchingOpcode("DS_BPERMUTE_FI_B32"),
+                "DS_BPERMUTE_FI_B32 should NOT touch LDS") &&
+         Expect(!IsLdsTouchingOpcode("DS_NOP"),
+                "DS_NOP should NOT touch LDS") &&
+         // Non-DS opcodes.
+         Expect(!IsLdsTouchingOpcode("S_MOV_B32"),
+                "S_MOV_B32 should NOT touch LDS") &&
+         Expect(!IsLdsTouchingOpcode("V_ADD_F32"),
+                "V_ADD_F32 should NOT touch LDS");
+}
+
 }  // namespace
 
 int main() {
@@ -125,6 +155,7 @@ int main() {
   ok = TestUnknownOpcodeReturnsUnsupported() && ok;
   ok = TestBranchFlagSet() && ok;
   ok = TestWaveSensitiveOpcodes() && ok;
+  ok = TestLdsTouchingOpcodeDetection() && ok;
 
   if (ok) {
     std::cerr << "All translation_rules tests passed.\n";

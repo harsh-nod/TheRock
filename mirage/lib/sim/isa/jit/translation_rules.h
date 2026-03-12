@@ -37,6 +37,11 @@ struct TranslationRule {
 // (SAVEEXEC and WREXEC variants, EXEC-conditional branches).
 std::span<const std::string_view> GetExecManipulatingOpcodes();
 
+// Returns true for DS_ opcodes that access LDS memory (not lane routing).
+// DS_PERMUTE, DS_BPERMUTE, DS_SWIZZLE, DS_BPERMUTE_FI use the lane routing
+// hardware and do NOT access LDS.
+bool IsLdsTouchingOpcode(std::string_view opcode);
+
 class TranslationRuleTable {
  public:
   TranslationRuleTable() = default;

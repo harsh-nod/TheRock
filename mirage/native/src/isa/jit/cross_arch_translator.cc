@@ -73,6 +73,7 @@ TranslationResult CrossArchTranslator::Translate(
 
   bool all_executable = true;
   bool has_exec_manipulating = false;
+  bool has_lds = false;
 
   for (std::size_t i = 0; i < source_program.size(); ++i) {
     InstructionDiagnostic diagnostic;
@@ -99,6 +100,11 @@ TranslationResult CrossArchTranslator::Translate(
       }
     }
 
+    // Track whether any instruction accesses LDS memory.
+    if (IsLdsTouchingOpcode(source_program[i].opcode)) {
+      has_lds = true;
+    }
+
     switch (diagnostic.status) {
       case TranslationStatus::kIdentity:
       case TranslationStatus::kRenamed:
@@ -121,6 +127,8 @@ TranslationResult CrossArchTranslator::Translate(
 
     result.diagnostics.push_back(std::move(diagnostic));
   }
+
+  result.contains_lds_instructions = has_lds;
 
   if (all_executable && !source_program.empty()) {
     ApplyBranchFixup(&result.translated_program, result.diagnostics);

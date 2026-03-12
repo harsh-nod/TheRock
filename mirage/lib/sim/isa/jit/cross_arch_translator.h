@@ -35,6 +35,10 @@ struct TranslationConfig {
   WavePolicy wave_policy = WavePolicy::kWave32InWave64;
   HazardPolicy hazard_policy = HazardPolicy::kPassthrough;
   DiagnosticDetail diagnostic_detail = DiagnosticDetail::kSummary;
+  // Maximum LDS capacity in bytes for executable programs.  Programs
+  // containing LDS-touching DS opcodes are rejected in executable mode
+  // when the requested LDS exceeds this limit.  Default: 64 KiB (gfx950).
+  std::uint32_t max_lds_bytes = 64 * 1024;
 
   bool operator==(const TranslationConfig&) const = default;
 };
@@ -80,6 +84,11 @@ struct TranslationResult {
   // with requires_exec_narrowing, the caller should be aware that the
   // program may dynamically alter the EXEC mask width.
   bool contains_exec_manipulating_instructions = false;
+  // True when the source program contains DS opcodes that access LDS
+  // memory (not lane routing).  Currently all LDS-touching opcodes are
+  // unsupported for translation, so this flag will only be set when the
+  // program is NOT executable.
+  bool contains_lds_instructions = false;
 };
 
 class CrossArchTranslator {
