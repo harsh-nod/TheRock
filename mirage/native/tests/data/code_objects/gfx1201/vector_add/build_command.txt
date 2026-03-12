@@ -1,0 +1,21 @@
+Toolchain: ROCm 7.3.0 (HIP version 7.2.53150-b958ce88c2)
+Compiler: AMD clang version 22.0.0git (llvm-project 26016 cadf5eb9133c3e09d8c5a04a534eab352e6e547e)
+
+Compilation command:
+  /opt/rocm-7.3.0/lib/llvm/bin/clang++ \
+    --offload-arch=gfx1201 -O3 \
+    --cuda-device-only \
+    -o vector_add_device.co \
+    -x hip source_excerpt.hip \
+    --rocm-path=/opt/rocm-7.3.0
+
+Then extracted the device ELF from the offload bundle:
+  clang-offload-bundler --unbundle \
+    --input=vector_add_device.co \
+    --output=vector_add.co \
+    --type=o \
+    --targets=hipv4-amdgcn-amd-amdhsa--gfx1201
+
+The checked-in vector_add.co is the raw ELF64 device code object.
+It is not stripped and contains full symbol/metadata information.
+Target arch: gfx1201 (RDNA4, wave32)

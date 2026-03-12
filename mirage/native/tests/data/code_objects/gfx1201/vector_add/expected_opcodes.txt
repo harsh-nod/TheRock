@@ -1,0 +1,49 @@
+# Actual opcode manifest for gfx1201 vector_add kernel.
+# Derived from llvm-objdump disassembly of the checked-in vector_add.co fixture.
+# These are the opcodes that the decoder, translator, and interpreter must handle.
+#
+# Format: OPCODE_NAME  category  notes
+
+# --- Scheduling / hint instructions (gfx12 specific, strip-safe) ---
+S_CLAUSE              scheduling   software clause grouping hint
+S_DELAY_ALU           scheduling   VALU/SALU scheduling hint
+S_WAIT_KMCNT          wait         scalar memory wait counter (replaces S_WAITCNT_* for SMEM)
+S_WAIT_ALU            wait         ALU pipeline wait (gfx12 specific)
+S_WAIT_LOADCNT        wait         vector memory load wait counter
+S_CODE_END            padding      post-endpgm padding (NOP fill)
+
+# --- Scalar memory ---
+S_LOAD_B32            smem         scalar load 1 dword (= S_LOAD_DWORD on gfx9)
+S_LOAD_B64            smem         scalar load 2 dwords (= S_LOAD_DWORDX2 on gfx9)
+S_LOAD_B128           smem         scalar load 4 dwords (= S_LOAD_DWORDX4 on gfx9)
+
+# --- Scalar ALU (identity on gfx9) ---
+S_AND_B32             salu         identity
+S_MOV_B32             salu         identity (source operand is exec_lo)
+
+# --- Scalar branch (identity on gfx9) ---
+S_CBRANCH_EXECZ       branch       identity
+S_ENDPGM              control      identity
+
+# --- Vector ALU ---
+V_MAD_CO_U64_U32      valu         64-bit multiply-add with carry (workitem ID computation)
+V_ASHRREV_I32_E32     valu         identity (sign extension for 64-bit address)
+V_LSHLREV_B64_E32     valu         64-bit left shift (address scaling by 4)
+V_ADD_CO_U32          valu         rename -> V_ADD_U32 (low 32-bit address add)
+V_ADD_CO_CI_U32_E64   valu         carry-in add (high 32-bit address add, gfx12 specific)
+V_CMPX_GT_I32_E64     vopc         compare-and-write-exec (bounds check: if i < n)
+V_ADD_F32_E32         valu         identity (the actual a[i] + b[i])
+
+# --- Global memory ---
+GLOBAL_LOAD_B32       vmem         global load 1 dword (= GLOBAL_LOAD_DWORD on gfx9)
+GLOBAL_STORE_B32      vmem         global store 1 dword (= GLOBAL_STORE_DWORD on gfx9)
+
+# --- Summary ---
+# Total unique opcodes: 20
+# Identity (present in gfx950): 6  (S_AND_B32, S_MOV_B32, S_CBRANCH_EXECZ, S_ENDPGM, V_ASHRREV_I32, V_ADD_F32)
+# Rename (same semantics, different name): 1  (V_ADD_CO_U32 -> V_ADD_U32)
+# Strip-safe (scheduling/wait hints, can be dropped): 5  (S_CLAUSE, S_DELAY_ALU, S_WAIT_KMCNT, S_WAIT_ALU, S_WAIT_LOADCNT)
+# Name-rename memory ops (B32 vs DWORD naming): 5  (S_LOAD_B32/B64/B128, GLOBAL_LOAD_B32, GLOBAL_STORE_B32)
+# Padding (strip-safe): 1  (S_CODE_END)
+# New translation rules needed: 3  (V_MAD_CO_U64_U32, V_LSHLREV_B64, V_ADD_CO_CI_U32_E64)
+# EXEC-modifying: 1  (V_CMPX_GT_I32_E64 - compare-and-exec)

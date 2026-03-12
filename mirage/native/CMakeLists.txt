@@ -30,6 +30,8 @@ add_library(mirage_sim_core STATIC
   src/isa/jit/hazard_pass.cc
   src/isa/jit/peephole_pass.cc
   src/isa/jit/semantic_lowering.cc
+  src/exec/launch/code_object_loader.cc
+  src/exec/launch/launch_state_builder.cc
   src/simdojo_dispatch_harness.cc
   src/single_gpu_simulator.cc
   src/virtual_gpu_device.cc
@@ -172,3 +174,25 @@ target_link_libraries(mirage_jit_peephole_pass_test PRIVATE mirage_sim_core)
 add_test(NAME mirage_jit_hazard_model_test COMMAND mirage_jit_hazard_model_test)
 add_test(NAME mirage_jit_hazard_pass_test COMMAND mirage_jit_hazard_pass_test)
 add_test(NAME mirage_jit_peephole_pass_test COMMAND mirage_jit_peephole_pass_test)
+
+# Test data directory for code object fixtures.
+set(MIRAGE_TEST_DATA_DIR "${CMAKE_CURRENT_LIST_DIR}/tests/data")
+
+add_executable(mirage_code_object_loader_test
+  tests/exec/launch/code_object_loader_test.cc
+)
+target_link_libraries(mirage_code_object_loader_test PRIVATE mirage_sim_core)
+target_compile_definitions(mirage_code_object_loader_test PRIVATE
+  MIRAGE_TEST_DATA_DIR="${MIRAGE_TEST_DATA_DIR}"
+)
+
+add_executable(mirage_launch_state_builder_test
+  tests/exec/launch/launch_state_builder_test.cc
+)
+target_link_libraries(mirage_launch_state_builder_test PRIVATE mirage_sim_core)
+target_compile_definitions(mirage_launch_state_builder_test PRIVATE
+  MIRAGE_TEST_DATA_DIR="${MIRAGE_TEST_DATA_DIR}"
+)
+
+add_test(NAME mirage_code_object_loader_test COMMAND mirage_code_object_loader_test)
+add_test(NAME mirage_launch_state_builder_test COMMAND mirage_launch_state_builder_test)

@@ -1,0 +1,47 @@
+# Kernel metadata extracted from vector_add.co via llvm-readelf -n
+# This is the source of truth for the launch ABI builder.
+
+kernel_name:              vector_add
+symbol:                   vector_add.kd
+target:                   amdgcn-amd-amdhsa--gfx1201
+wavefront_size:           32
+max_flat_workgroup_size:  1024
+sgpr_count:               10
+vgpr_count:               6
+sgpr_spill_count:         0
+vgpr_spill_count:         0
+group_segment_fixed_size: 0
+private_segment_fixed_size: 0
+kernarg_segment_size:     288
+kernarg_segment_align:    8
+
+# Kernel arguments (from AMDGPU metadata .note section)
+# offset  size  kind                name
+  0       8     global_buffer       out.coerce
+  8       8     global_buffer       a.coerce
+  16      8     global_buffer       b.coerce
+  24      4     by_value            n
+  32      4     hidden_block_count_x
+  36      4     hidden_block_count_y
+  40      4     hidden_block_count_z
+  44      2     hidden_group_size_x
+  46      2     hidden_group_size_y
+  48      2     hidden_group_size_z
+  50      2     hidden_remainder_x
+  52      2     hidden_remainder_y
+  54      2     hidden_remainder_z
+  72      8     hidden_global_offset_x
+  80      8     hidden_global_offset_y
+  88      8     hidden_global_offset_z
+  96      2     hidden_grid_dims
+
+# ELF structure
+text_section_offset:      0x900
+text_section_size:        0x280
+text_section_vaddr:       0x1900
+kernel_entry_vaddr:       0x1900
+kernel_entry_size:        204
+
+# Kernel descriptor (.rodata, vector_add.kd)
+kd_vaddr:                 0x8c0
+kd_size:                  64
