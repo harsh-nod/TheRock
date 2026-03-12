@@ -22,6 +22,7 @@ enum class SyntheticKernelOpcode {
   kFill32,
   kVectorAddI32,
   kGfx950Program,
+  kGfx1201TranslatedProgram,
 };
 
 struct SyntheticDispatchArgs {

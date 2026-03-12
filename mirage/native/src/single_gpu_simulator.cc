@@ -7,6 +7,7 @@
 
 #include "lib/sim/isa/gfx950/binary_decoder.h"
 #include "lib/sim/isa/gfx950/interpreter.h"
+#include "lib/sim/isa/jit/cross_arch_translator.h"
 
 namespace mirage::sim {
 namespace {
@@ -338,6 +339,10 @@ exec::CompletionRecord SingleGpuSimulator::ExecuteDispatch(
     case exec::SyntheticKernelOpcode::kGfx950Program:
       completion.success = ExecuteGfx950Program(packet);
       break;
+    case exec::SyntheticKernelOpcode::kGfx1201TranslatedProgram:
+      // Handled via SubmitTranslatedProgram, not through this dispatcher.
+      completion.success = false;
+      break;
   }
 
   return completion;
@@ -402,11 +407,20 @@ bool SingleGpuSimulator::ExecuteGfx950Program(
     return false;
   }
 
-  std::string error_message;
   std::shared_ptr<const std::vector<isa::CompiledInstruction>> program;
   if (!LoadDecodedGfx950Program(packet.args.code_va, packet.args.code_word_count,
                                 &program) ||
       program == nullptr) {
+    return false;
+  }
+
+  return ExecuteCompiledGfx950Program(packet, *program);
+}
+
+bool SingleGpuSimulator::ExecuteCompiledGfx950Program(
+    const exec::SyntheticDispatchPacket& packet,
+    std::span<const isa::CompiledInstruction> program) {
+  if (packet.args.wave_count == 0) {
     return false;
   }
 
@@ -415,6 +429,7 @@ bool SingleGpuSimulator::ExecuteGfx950Program(
     return false;
   }
 
+  std::string error_message;
   isa::Gfx950Interpreter interpreter;
   SimulatorExecutionMemory memory(this);
   std::vector<isa::WaveExecutionState> waves(packet.args.wave_count);
@@ -480,7 +495,7 @@ bool SingleGpuSimulator::ExecuteGfx950Program(
     bool all_done = true;
     std::size_t blocked_waves = 0;
     for (isa::WaveExecutionState& state : waves) {
-      if (state.halted || state.pc >= program->size()) {
+      if (state.halted || state.pc >= program.size()) {
         continue;
       }
       all_done = false;
@@ -493,7 +508,7 @@ bool SingleGpuSimulator::ExecuteGfx950Program(
       const isa::WorkgroupExecutionContext* workgroup_ptr =
           waves.size() > 1 ? &workgroup : nullptr;
       if (!interpreter.ExecuteProgramUntilYield(
-              *program, &state, &memory, workgroup_ptr, &run_state,
+              program, &state, &memory, workgroup_ptr, &run_state,
               &error_message)) {
         return false;
       }
@@ -533,6 +548,55 @@ bool SingleGpuSimulator::ExecuteGfx950Program(
     ++vgpr_state_view->record->write_version;
   }
   return true;
+}
+
+exec::CompletionRecord SingleGpuSimulator::SubmitTranslatedProgram(
+    queue::QueueId queue_id,
+    const exec::SyntheticDispatchPacket& packet,
+    std::span<const isa::DecodedInstruction> source_program,
+    const isa::jit::TranslationConfig& translation_config) {
+  const auto queue_state = device_.QueryQueue(queue_id);
+  if (!queue_state.has_value() ||
+      queue_state->descriptor.type != queue::QueueType::kCompute) {
+    return {};
+  }
+
+  const std::uint64_t dispatch_id = next_dispatch_id_++;
+  const std::uint64_t next_write_ptr = queue_state->doorbell.write_ptr + 1;
+  if (!device_.RingDoorbell(queue_id, next_write_ptr)) {
+    return {};
+  }
+
+  exec::CompletionRecord completion;
+  completion.dispatch_id = dispatch_id;
+  completion.completed = true;
+
+  // Translate source program to gfx950.
+  isa::jit::CrossArchTranslator translator(translation_config);
+  isa::jit::TranslationResult translation =
+      translator.Translate(source_program);
+
+  if (!translation.is_executable) {
+    completion.success = false;
+    device_.RetireTo(queue_id, next_write_ptr);
+    return completion;
+  }
+
+  // Compile translated gfx950 program.
+  std::string error_message;
+  isa::Gfx950Interpreter interpreter;
+  std::vector<isa::CompiledInstruction> compiled_program;
+  if (!interpreter.CompileProgram(translation.translated_program,
+                                  &compiled_program, &error_message)) {
+    completion.success = false;
+    device_.RetireTo(queue_id, next_write_ptr);
+    return completion;
+  }
+
+  // Execute through the standard gfx950 wave execution loop.
+  completion.success = ExecuteCompiledGfx950Program(packet, compiled_program);
+  device_.RetireTo(queue_id, next_write_ptr);
+  return completion;
 }
 
 }  // namespace mirage::sim

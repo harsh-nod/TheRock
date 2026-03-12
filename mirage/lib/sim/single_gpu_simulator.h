@@ -11,7 +11,9 @@
 #include <vector>
 
 #include "lib/sim/exec/dispatch/dispatch_context.h"
+#include "lib/sim/isa/common/decoded_instruction.h"
 #include "lib/sim/isa/gfx950/interpreter.h"
+#include "lib/sim/isa/jit/cross_arch_translator.h"
 #include "lib/sim/gpu/virtual_gpu_device.h"
 #include "lib/sim/memory/gpu_va_space.h"
 #include "lib/sim/memory/memory_region.h"
@@ -61,6 +63,18 @@ class SingleGpuSimulator {
   DecodeCacheStats GetDecodeCacheStats() const;
   exec::CompletionRecord Submit(queue::QueueId queue_id,
                                 const exec::SyntheticDispatchPacket& packet);
+
+  // Submit a pre-decoded gfx1201 program for translation to gfx950 and
+  // execution.  The source program is translated via CrossArchTranslator,
+  // compiled by the gfx950 interpreter, and executed through the standard
+  // wave execution loop.  The dispatch packet provides register state,
+  // exec mask, and wave count as usual (code_va / code_word_count are
+  // ignored since the program is supplied directly).
+  exec::CompletionRecord SubmitTranslatedProgram(
+      queue::QueueId queue_id,
+      const exec::SyntheticDispatchPacket& packet,
+      std::span<const isa::DecodedInstruction> source_program,
+      const isa::jit::TranslationConfig& translation_config);
 
  private:
   struct AllocationRecord;
@@ -117,6 +131,9 @@ class SingleGpuSimulator {
   bool ExecuteFill32(const exec::SyntheticDispatchPacket& packet);
   bool ExecuteVectorAddI32(const exec::SyntheticDispatchPacket& packet);
   bool ExecuteGfx950Program(const exec::SyntheticDispatchPacket& packet);
+  bool ExecuteCompiledGfx950Program(
+      const exec::SyntheticDispatchPacket& packet,
+      std::span<const isa::CompiledInstruction> program);
 
   gpu::VirtualGpuDevice device_;
   memory::GpuVaSpace va_space_;
