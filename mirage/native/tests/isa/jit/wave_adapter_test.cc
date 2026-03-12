@@ -93,8 +93,24 @@ bool TestWaveSensitiveDetection() {
 
   return Expect(adapter.IsWaveSensitive("V_READLANE_B32"),
                 "V_READLANE_B32 should be wave-sensitive") &&
+         Expect(adapter.IsWaveSensitive("V_WRITELANE_B32"),
+                "V_WRITELANE_B32 should be wave-sensitive") &&
          Expect(adapter.IsWaveSensitive("DS_PERMUTE_B32"),
                 "DS_PERMUTE_B32 should be wave-sensitive") &&
+         Expect(adapter.IsWaveSensitive("DS_BPERMUTE_B32"),
+                "DS_BPERMUTE_B32 should be wave-sensitive") &&
+         Expect(adapter.IsWaveSensitive("DS_SWIZZLE_B32"),
+                "DS_SWIZZLE_B32 should be wave-sensitive") &&
+         Expect(adapter.IsWaveSensitive("DS_BPERMUTE_FI_B32"),
+                "DS_BPERMUTE_FI_B32 should be wave-sensitive") &&
+         Expect(adapter.IsWaveSensitive("V_MBCNT_LO_U32_B32"),
+                "V_MBCNT_LO_U32_B32 should be wave-sensitive") &&
+         Expect(adapter.IsWaveSensitive("V_MBCNT_HI_U32_B32"),
+                "V_MBCNT_HI_U32_B32 should be wave-sensitive") &&
+         Expect(!adapter.IsWaveSensitive("V_READFIRSTLANE_B32"),
+                "V_READFIRSTLANE_B32 should NOT be wave-sensitive") &&
+         Expect(!adapter.IsWaveSensitive("S_QUADMASK_B32"),
+                "S_QUADMASK_B32 should NOT be wave-sensitive") &&
          Expect(!adapter.IsWaveSensitive("V_ADD_F32"),
                 "V_ADD_F32 should not be wave-sensitive") &&
          Expect(!adapter.IsWaveSensitive("S_MOV_B32"),

@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "lib/sim/isa/common/decoded_instruction.h"
@@ -144,6 +146,57 @@ bool TestDiagnosticStatusNames() {
                 "blocked_on_runtime status name");
 }
 
+// Verify that no wave-sensitive opcode appears in the translation rule table.
+// This is a safety net: if someone adds a cross-lane opcode to the identity
+// list, this test will fail.
+bool TestNoWaveSensitiveOpcodeInRuleTable() {
+  TranslationRuleTable table;
+  table.BuildForDirection(
+      static_cast<std::uint8_t>(SourceArchitecture::kGfx1201),
+      static_cast<std::uint8_t>(TargetArchitecture::kGfx950));
+
+  auto wave_sensitive = GetWaveSensitiveOpcodes();
+
+  bool ok = true;
+  for (const auto& ws_opcode : wave_sensitive) {
+    const TranslationRule* rule = table.FindRule(ws_opcode);
+    if (rule != nullptr) {
+      std::string msg = "Wave-sensitive opcode found in rule table: ";
+      msg += ws_opcode;
+      ok = Expect(false, msg.c_str()) && ok;
+    }
+  }
+
+  return ok;
+}
+
+// Verify that wave-sensitive opcodes are rejected during full translation.
+bool TestWaveSensitiveOpcodeBlocksTranslation() {
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(1)),
+      DecodedInstruction::Binary("V_READLANE_B32",
+                                 InstructionOperand::Sgpr(1),
+                                 InstructionOperand::Vgpr(0),
+                                 InstructionOperand::Sgpr(0)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx1201;
+  config.target_arch = TargetArchitecture::kGfx950;
+  config.translation_mode = TranslationMode::kExecutableStrict;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program);
+
+  return Expect(!result.is_executable,
+                "program with V_READLANE_B32 should not be executable") &&
+         Expect(result.capability_summary.unsupported_count >= 1,
+                "V_READLANE_B32 should be counted as unsupported");
+}
+
 }  // namespace
 
 int main() {
@@ -153,6 +206,8 @@ int main() {
   ok = TestEmptyProgramCoverage() && ok;
   ok = TestAllIdentityProgramTranslatesSuccessfully() && ok;
   ok = TestDiagnosticStatusNames() && ok;
+  ok = TestNoWaveSensitiveOpcodeInRuleTable() && ok;
+  ok = TestWaveSensitiveOpcodeBlocksTranslation() && ok;
 
   if (ok) {
     std::cerr << "All translation_coverage tests passed.\n";

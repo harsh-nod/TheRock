@@ -10,13 +10,24 @@ namespace mirage::sim::isa::jit {
 namespace {
 
 // Wave-topology-sensitive opcodes that cannot safely execute in
-// wave32-in-wave64 mode because their semantics depend on lanes 32..63
-// or on wave-topology-sensitive cross-lane behavior.
-constexpr std::array<std::string_view, 6> kWaveSensitiveOpcodes = {
+// wave32-in-wave64 mode because their semantics depend on lanes 32..63,
+// on wave-topology-sensitive cross-lane behavior, or on arbitrary lane
+// index addressing that may reference inactive lanes 32..63.
+//
+// V_READFIRSTLANE_B32 is intentionally NOT in this list: it reads from
+// the first active lane which is always within lanes 0..31 when the
+// EXEC mask is narrowed to wave32.
+//
+// S_QUADMASK_B32/B64 are intentionally NOT in this list: quad masks
+// are computed from the EXEC mask and produce correct results when
+// the upper 32 lanes are inactive.
+constexpr std::array<std::string_view, 8> kWaveSensitiveOpcodes = {
     "V_READLANE_B32",
     "V_WRITELANE_B32",
     "DS_PERMUTE_B32",
     "DS_BPERMUTE_B32",
+    "DS_SWIZZLE_B32",
+    "DS_BPERMUTE_FI_B32",
     "V_MBCNT_LO_U32_B32",
     "V_MBCNT_HI_U32_B32",
 };
