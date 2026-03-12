@@ -78,6 +78,10 @@ enum class LoweringKind : std::uint8_t {
   kScaledConversion,
   // Transpose approximate lowering (behind flag).
   kApproximateTranspose,
+  // WMMA -> MFMA tile-matched lowering with ACCVGPR bracketing.
+  kWmmaToMfma,
+  // Split barrier -> monolithic barrier lowering.
+  kBarrierSplitToMonolithic,
 };
 
 // Tensor descriptor role for tensor memory instructions (gfx1250).

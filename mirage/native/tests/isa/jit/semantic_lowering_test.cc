@@ -213,8 +213,11 @@ bool TestLiftSplitBarrierInstruction() {
                 "family should be barrier") &&
          Expect(semantic.barrier_kind == BarrierKind::kSplitSignal,
                 "should be split signal") &&
-         Expect(semantic.prerequisites.requires_split_barrier_runtime,
-                "split barrier should require runtime");
+         Expect(!semantic.prerequisites.requires_split_barrier_runtime,
+                "split barrier should no longer require runtime prereq") &&
+         Expect(semantic.lowering_kind ==
+                    LoweringKind::kBarrierSplitToMonolithic,
+                "split barrier should have split-to-monolithic lowering");
 }
 
 bool TestLiftMfmaInstruction() {
@@ -229,8 +232,8 @@ bool TestLiftMfmaInstruction() {
   return Expect(ok, "lift should succeed") &&
          Expect(semantic.family == SemanticFamily::kMfma,
                 "family should be mfma") &&
-         Expect(semantic.prerequisites.requires_accvgpr_support,
-                "MFMA should require ACCVGPR support") &&
+         Expect(!semantic.prerequisites.requires_accvgpr_support,
+                "MFMA should no longer require ACCVGPR prereq") &&
          Expect(semantic.fragment_layout == MatrixFragmentLayout::kAccumulator,
                 "MFMA should use accumulator layout");
 }
@@ -350,39 +353,48 @@ bool TestClassifyForLoweringBarrier() {
   SemanticInstruction split;
   split.family = SemanticFamily::kBarrier;
   split.barrier_kind = BarrierKind::kSplitSignal;
-  split.prerequisites.requires_split_barrier_runtime = true;
+  split.lowering_kind = LoweringKind::kBarrierSplitToMonolithic;
 
   return Expect(lowering.ClassifyForLowering(monolithic) ==
                     TranslationStatus::kRequiresSemanticLowering,
                 "monolithic barrier should require semantic lowering") &&
          Expect(lowering.ClassifyForLowering(split) ==
-                    TranslationStatus::kBlockedOnRuntime,
-                "split barrier should be blocked on runtime");
+                    TranslationStatus::kRequiresSemanticLowering,
+                "split barrier should require semantic lowering");
 }
 
 bool TestClassifyForLoweringMatrix() {
   SemanticLowering lowering;
 
+  // MFMA is now directly lowerable (ACCVGPR support available).
   SemanticInstruction mfma;
   mfma.family = SemanticFamily::kMfma;
-  mfma.prerequisites.requires_accvgpr_support = true;
 
-  SemanticInstruction wmma;
-  wmma.family = SemanticFamily::kWmma;
-  wmma.prerequisites.requires_accvgpr_support = true;
+  // WMMA with a tile match is lowerable.
+  SemanticInstruction wmma_match;
+  wmma_match.family = SemanticFamily::kWmma;
+  wmma_match.lowering_kind = LoweringKind::kWmmaToMfma;
 
+  // WMMA without a tile match is coverage-only.
+  SemanticInstruction wmma_no_match;
+  wmma_no_match.family = SemanticFamily::kWmma;
+
+  // SWMMAC remains coverage-only.
   SemanticInstruction swmmac;
   swmmac.family = SemanticFamily::kSwmmac;
 
   return Expect(lowering.ClassifyForLowering(mfma) ==
-                    TranslationStatus::kBlockedOnRuntime,
-                "MFMA with ACCVGPR prereq should be blocked") &&
-         Expect(lowering.ClassifyForLowering(wmma) ==
-                    TranslationStatus::kBlockedOnRuntime,
-                "WMMA with ACCVGPR prereq should be blocked") &&
+                    TranslationStatus::kRequiresSemanticLowering,
+                "MFMA should require semantic lowering") &&
+         Expect(lowering.ClassifyForLowering(wmma_match) ==
+                    TranslationStatus::kRequiresSemanticLowering,
+                "WMMA with tile match should require semantic lowering") &&
+         Expect(lowering.ClassifyForLowering(wmma_no_match) ==
+                    TranslationStatus::kCoverageOnly,
+                "WMMA without tile match should be coverage-only") &&
          Expect(lowering.ClassifyForLowering(swmmac) ==
-                    TranslationStatus::kBlockedOnRuntime,
-                "SWMMAC should be blocked");
+                    TranslationStatus::kCoverageOnly,
+                "SWMMAC should be coverage-only");
 }
 
 bool TestClassifyForLoweringCoverageOnly() {
@@ -469,7 +481,7 @@ bool TestClassifyInstructionWithSemanticFallthrough() {
       translator.ClassifyInstructionWithSemantic("S_MOV_B32");
 
   // V_MFMA_F32_16X16X4_F32 has no rule -> should fall through to
-  // semantic classification and return blocked (ACCVGPR prereq).
+  // semantic classification and return requires semantic lowering.
   TranslationStatus mfma_status =
       translator.ClassifyInstructionWithSemantic("V_MFMA_F32_16X16X4_F32");
 
@@ -483,8 +495,8 @@ bool TestClassifyInstructionWithSemanticFallthrough() {
 
   return Expect(mov_status == TranslationStatus::kIdentity,
                 "S_MOV_B32 should be identity via fast path") &&
-         Expect(mfma_status == TranslationStatus::kBlockedOnRuntime,
-                "V_MFMA should be blocked on runtime via semantic") &&
+         Expect(mfma_status == TranslationStatus::kRequiresSemanticLowering,
+                "V_MFMA should require semantic lowering") &&
          Expect(transpose_status ==
                     TranslationStatus::kRequiresSemanticLowering,
                 "V_TRANSPOSE should require semantic lowering") &&
@@ -530,14 +542,14 @@ bool TestComputeCoverageWithSemantic() {
        Expect(old_summary.blocked_on_runtime_count == 0,
               "old: 0 blocked") && ok;
 
-  // New: S_MOV_B32 + S_ENDPGM executable, MFMA+tensor blocked,
-  //      transpose coverage-only, unknown unsupported.
+  // New: S_MOV_B32 + S_ENDPGM executable, tensor blocked,
+  //      MFMA + transpose coverage-only, unknown unsupported.
   ok = Expect(new_summary.executable_count == 2,
               "new: 2 executable") &&
-       Expect(new_summary.blocked_on_runtime_count == 2,
-              "new: 2 blocked (MFMA, tensor)") &&
-       Expect(new_summary.coverage_only_count == 1,
-              "new: 1 coverage-only (transpose)") &&
+       Expect(new_summary.blocked_on_runtime_count == 1,
+              "new: 1 blocked (tensor)") &&
+       Expect(new_summary.coverage_only_count == 2,
+              "new: 2 coverage-only (MFMA, transpose)") &&
        Expect(new_summary.unsupported_count == 1,
               "new: 1 unsupported (unknown)") && ok;
 
@@ -559,6 +571,301 @@ bool TestLowerToTargetNotYetImplemented() {
   return Expect(!ok, "LowerToTarget should return false (not yet implemented)")
       && Expect(!error.empty(), "should provide error message")
       && Expect(output.empty(), "should produce no output");
+}
+
+// --- Phase 7: WMMA -> MFMA lowering tests ---
+
+bool TestLiftWmmaInstruction() {
+  SemanticLowering lowering;
+  auto decoded = DecodedInstruction::Nullary("V_WMMA_F32_16X16X16_F16");
+
+  SemanticInstruction semantic;
+  bool ok = lowering.LiftFromDecoded(
+      decoded, static_cast<std::uint8_t>(SourceArchitecture::kGfx1201),
+      &semantic);
+
+  return Expect(ok, "lift WMMA should succeed") &&
+         Expect(semantic.family == SemanticFamily::kWmma,
+                "family should be wmma") &&
+         Expect(semantic.fragment_layout == MatrixFragmentLayout::kAccumulator,
+                "WMMA should use accumulator layout") &&
+         Expect(semantic.matrix_m == 16, "M should be 16") &&
+         Expect(semantic.matrix_n == 16, "N should be 16") &&
+         Expect(semantic.matrix_k == 16, "K should be 16") &&
+         Expect(semantic.input_element_type == ElementType::kF16,
+                "input should be F16") &&
+         Expect(semantic.output_element_type == ElementType::kF32,
+                "output should be F32") &&
+         Expect(semantic.lowering_kind == LoweringKind::kWmmaToMfma,
+                "lowering kind should be WmmaToMfma") &&
+         Expect(semantic.lowered_opcode == "V_MFMA_F32_16X16X16_F16",
+                "lowered opcode should be MFMA equivalent") &&
+         Expect(!semantic.prerequisites.requires_accvgpr_support,
+                "WMMA should not have ACCVGPR prereq");
+}
+
+bool TestLiftWmmaNoMatchInstruction() {
+  SemanticLowering lowering;
+  // V_WMMA_I32_16X16X16_IU8 has no direct MFMA tile match.
+  auto decoded = DecodedInstruction::Nullary("V_WMMA_I32_16X16X16_IU8");
+
+  SemanticInstruction semantic;
+  bool ok = lowering.LiftFromDecoded(
+      decoded, static_cast<std::uint8_t>(SourceArchitecture::kGfx1201),
+      &semantic);
+
+  return Expect(ok, "lift WMMA should succeed") &&
+         Expect(semantic.family == SemanticFamily::kWmma,
+                "family should be wmma") &&
+         Expect(semantic.lowering_kind == LoweringKind::kNone,
+                "no MFMA match, lowering kind should be none") &&
+         Expect(semantic.lowered_opcode.empty(),
+                "no lowered opcode for unmatched WMMA");
+}
+
+bool TestClassifyForLoweringWmmaWithMatch() {
+  SemanticLowering lowering;
+
+  SemanticInstruction wmma;
+  wmma.family = SemanticFamily::kWmma;
+  wmma.lowering_kind = LoweringKind::kWmmaToMfma;
+
+  return Expect(lowering.ClassifyForLowering(wmma) ==
+                    TranslationStatus::kRequiresSemanticLowering,
+                "WMMA with tile match should require semantic lowering");
+}
+
+bool TestClassifyForLoweringWmmaNoMatch() {
+  SemanticLowering lowering;
+
+  SemanticInstruction wmma;
+  wmma.family = SemanticFamily::kWmma;
+
+  return Expect(lowering.ClassifyForLowering(wmma) ==
+                    TranslationStatus::kCoverageOnly,
+                "WMMA without tile match should be coverage-only");
+}
+
+bool TestLowerWmmaToMfma() {
+  SemanticLowering lowering;
+
+  SemanticInstruction instr;
+  instr.opcode = "V_WMMA_F32_16X16X16_F16";
+  instr.family = SemanticFamily::kWmma;
+  instr.lowering_kind = LoweringKind::kWmmaToMfma;
+  instr.lowered_opcode = "V_MFMA_F32_16X16X16_F16";
+
+  std::vector<DecodedInstruction> output;
+  std::string error;
+  bool ok = lowering.LowerToTarget(
+      instr, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &output, &error);
+
+  return Expect(ok, "WMMA->MFMA lowering should succeed") &&
+         Expect(output.size() == 3,
+                "should produce 3 instructions (WRITE + MFMA + READ)") &&
+         Expect(output[0].opcode == "V_ACCVGPR_WRITE",
+                "first should be V_ACCVGPR_WRITE") &&
+         Expect(output[1].opcode == "V_MFMA_F32_16X16X16_F16",
+                "second should be V_MFMA_F32_16X16X16_F16") &&
+         Expect(output[2].opcode == "V_ACCVGPR_READ",
+                "third should be V_ACCVGPR_READ");
+}
+
+bool TestLowerWmmaToMfmaBf16() {
+  SemanticLowering lowering;
+
+  SemanticInstruction instr;
+  instr.opcode = "V_WMMA_F32_16X16X16_BF16";
+  instr.family = SemanticFamily::kWmma;
+  instr.lowering_kind = LoweringKind::kWmmaToMfma;
+  instr.lowered_opcode = "V_MFMA_F32_16X16X16_BF16";
+
+  std::vector<DecodedInstruction> output;
+  std::string error;
+  bool ok = lowering.LowerToTarget(
+      instr, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &output, &error);
+
+  return Expect(ok, "WMMA BF16->MFMA lowering should succeed") &&
+         Expect(output.size() == 3, "should produce 3 instructions") &&
+         Expect(output[1].opcode == "V_MFMA_F32_16X16X16_BF16",
+                "MFMA opcode should be BF16 variant");
+}
+
+// --- Phase 7: Barrier lowering tests ---
+
+bool TestLowerSplitBarrierSignal() {
+  SemanticLowering lowering;
+
+  SemanticInstruction instr;
+  instr.opcode = "S_BARRIER_SIGNAL_M0";
+  instr.family = SemanticFamily::kBarrier;
+  instr.barrier_kind = BarrierKind::kSplitSignal;
+  instr.lowering_kind = LoweringKind::kBarrierSplitToMonolithic;
+
+  std::vector<DecodedInstruction> output;
+  std::string error;
+  bool ok = lowering.LowerToTarget(
+      instr, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &output, &error);
+
+  return Expect(ok, "split signal lowering should succeed") &&
+         Expect(output.size() == 1, "should produce 1 instruction") &&
+         Expect(output[0].opcode == "S_NOP",
+                "split signal should become S_NOP");
+}
+
+bool TestLowerSplitBarrierWait() {
+  SemanticLowering lowering;
+
+  SemanticInstruction instr;
+  instr.opcode = "S_BARRIER_WAIT";
+  instr.family = SemanticFamily::kBarrier;
+  instr.barrier_kind = BarrierKind::kSplitWait;
+  instr.lowering_kind = LoweringKind::kBarrierSplitToMonolithic;
+
+  std::vector<DecodedInstruction> output;
+  std::string error;
+  bool ok = lowering.LowerToTarget(
+      instr, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &output, &error);
+
+  return Expect(ok, "split wait lowering should succeed") &&
+         Expect(output.size() == 1, "should produce 1 instruction") &&
+         Expect(output[0].opcode == "S_BARRIER",
+                "split wait should become S_BARRIER");
+}
+
+bool TestLowerSplitBarrierLeave() {
+  SemanticLowering lowering;
+
+  SemanticInstruction instr;
+  instr.opcode = "S_BARRIER_LEAVE";
+  instr.family = SemanticFamily::kBarrier;
+  instr.barrier_kind = BarrierKind::kSplitWait;
+  instr.lowering_kind = LoweringKind::kBarrierSplitToMonolithic;
+
+  std::vector<DecodedInstruction> output;
+  std::string error;
+  bool ok = lowering.LowerToTarget(
+      instr, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &output, &error);
+
+  return Expect(ok, "split leave lowering should succeed") &&
+         Expect(output.size() == 1, "should produce 1 instruction") &&
+         Expect(output[0].opcode == "S_BARRIER",
+                "split leave should become S_BARRIER");
+}
+
+bool TestClassifyForLoweringSplitBarrier() {
+  SemanticLowering lowering;
+
+  SemanticInstruction signal;
+  signal.family = SemanticFamily::kBarrier;
+  signal.barrier_kind = BarrierKind::kSplitSignal;
+  signal.lowering_kind = LoweringKind::kBarrierSplitToMonolithic;
+
+  SemanticInstruction wait;
+  wait.family = SemanticFamily::kBarrier;
+  wait.barrier_kind = BarrierKind::kSplitWait;
+  wait.lowering_kind = LoweringKind::kBarrierSplitToMonolithic;
+
+  return Expect(lowering.ClassifyForLowering(signal) ==
+                    TranslationStatus::kRequiresSemanticLowering,
+                "split signal should require semantic lowering") &&
+         Expect(lowering.ClassifyForLowering(wait) ==
+                    TranslationStatus::kRequiresSemanticLowering,
+                "split wait should require semantic lowering");
+}
+
+// --- Phase 7: End-to-end WMMA lift + classify + lower ---
+
+bool TestWmmaEndToEndLiftClassifyLower() {
+  SemanticLowering lowering;
+  auto decoded = DecodedInstruction::Nullary("V_WMMA_F32_16X16X16_F16");
+
+  // 1. Lift
+  SemanticInstruction semantic;
+  bool ok = lowering.LiftFromDecoded(
+      decoded, static_cast<std::uint8_t>(SourceArchitecture::kGfx1201),
+      &semantic);
+  if (!Expect(ok, "e2e: lift should succeed")) return false;
+
+  // 2. Classify
+  TranslationStatus status = lowering.ClassifyForLowering(semantic);
+  if (!Expect(status == TranslationStatus::kRequiresSemanticLowering,
+              "e2e: should require semantic lowering"))
+    return false;
+
+  // 3. Lower
+  std::vector<DecodedInstruction> output;
+  std::string error;
+  ok = lowering.LowerToTarget(
+      semantic, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &output, &error);
+
+  return Expect(ok, "e2e: lowering should succeed") &&
+         Expect(output.size() == 3, "e2e: should produce 3 instructions") &&
+         Expect(output[0].opcode == "V_ACCVGPR_WRITE",
+                "e2e: first should be V_ACCVGPR_WRITE") &&
+         Expect(output[1].opcode == "V_MFMA_F32_16X16X16_F16",
+                "e2e: second should be MFMA") &&
+         Expect(output[2].opcode == "V_ACCVGPR_READ",
+                "e2e: third should be V_ACCVGPR_READ");
+}
+
+bool TestBarrierEndToEndLiftClassifyLower() {
+  SemanticLowering lowering;
+  auto decoded_signal = DecodedInstruction::Nullary("S_BARRIER_SIGNAL_M0");
+  auto decoded_wait = DecodedInstruction::Nullary("S_BARRIER_WAIT");
+
+  // Lift signal
+  SemanticInstruction sem_signal;
+  bool ok = lowering.LiftFromDecoded(
+      decoded_signal,
+      static_cast<std::uint8_t>(SourceArchitecture::kGfx1250), &sem_signal);
+  if (!Expect(ok, "e2e barrier: lift signal should succeed")) return false;
+
+  // Lift wait
+  SemanticInstruction sem_wait;
+  ok = lowering.LiftFromDecoded(
+      decoded_wait,
+      static_cast<std::uint8_t>(SourceArchitecture::kGfx1250), &sem_wait);
+  if (!Expect(ok, "e2e barrier: lift wait should succeed")) return false;
+
+  // Classify
+  TranslationStatus signal_status = lowering.ClassifyForLowering(sem_signal);
+  TranslationStatus wait_status = lowering.ClassifyForLowering(sem_wait);
+
+  if (!Expect(signal_status == TranslationStatus::kRequiresSemanticLowering,
+              "e2e barrier: signal should require lowering"))
+    return false;
+  if (!Expect(wait_status == TranslationStatus::kRequiresSemanticLowering,
+              "e2e barrier: wait should require lowering"))
+    return false;
+
+  // Lower signal
+  std::vector<DecodedInstruction> signal_out;
+  std::string error;
+  ok = lowering.LowerToTarget(
+      sem_signal, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &signal_out, &error);
+  if (!Expect(ok, "e2e barrier: signal lowering should succeed")) return false;
+
+  // Lower wait
+  std::vector<DecodedInstruction> wait_out;
+  ok = lowering.LowerToTarget(
+      sem_wait, static_cast<std::uint8_t>(TargetArchitecture::kGfx950),
+      &wait_out, &error);
+  if (!Expect(ok, "e2e barrier: wait lowering should succeed")) return false;
+
+  return Expect(signal_out.size() == 1, "e2e barrier: signal -> 1 instr") &&
+         Expect(signal_out[0].opcode == "S_NOP",
+                "e2e barrier: signal -> S_NOP") &&
+         Expect(wait_out.size() == 1, "e2e barrier: wait -> 1 instr") &&
+         Expect(wait_out[0].opcode == "S_BARRIER",
+                "e2e barrier: wait -> S_BARRIER");
 }
 
 }  // namespace
@@ -590,6 +897,21 @@ int main() {
   ok = TestClassifyInstructionWithSemanticFallthrough() && ok;
   ok = TestComputeCoverageWithSemantic() && ok;
   ok = TestLowerToTargetNotYetImplemented() && ok;
+  // Phase 7: WMMA -> MFMA lowering tests.
+  ok = TestLiftWmmaInstruction() && ok;
+  ok = TestLiftWmmaNoMatchInstruction() && ok;
+  ok = TestClassifyForLoweringWmmaWithMatch() && ok;
+  ok = TestClassifyForLoweringWmmaNoMatch() && ok;
+  ok = TestLowerWmmaToMfma() && ok;
+  ok = TestLowerWmmaToMfmaBf16() && ok;
+  // Phase 7: Barrier lowering tests.
+  ok = TestLowerSplitBarrierSignal() && ok;
+  ok = TestLowerSplitBarrierWait() && ok;
+  ok = TestLowerSplitBarrierLeave() && ok;
+  ok = TestClassifyForLoweringSplitBarrier() && ok;
+  // Phase 7: End-to-end tests.
+  ok = TestWmmaEndToEndLiftClassifyLower() && ok;
+  ok = TestBarrierEndToEndLiftClassifyLower() && ok;
 
   if (ok) {
     std::cerr << "All semantic_lowering tests passed.\n";

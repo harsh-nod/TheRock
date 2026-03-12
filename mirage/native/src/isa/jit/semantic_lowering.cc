@@ -96,6 +96,49 @@ bool IsPackedBf16Opcode(std::string_view opcode) {
          opcode.find("_BF16") != std::string_view::npos;
 }
 
+// --- WMMA -> MFMA tile mapping ---
+
+struct WmmaToMfmaMapping {
+  std::string_view wmma_opcode;
+  std::string_view mfma_opcode;
+  std::uint8_t accvgpr_count;
+  ElementType input_type;
+  ElementType output_type;
+  std::uint8_t m;
+  std::uint8_t n;
+  std::uint8_t k;
+};
+
+// Only tile-matched pairs with identical M×N×K and compatible types.
+constexpr WmmaToMfmaMapping kWmmaToMfmaMappings[] = {
+    {"V_WMMA_F32_16X16X16_F16", "V_MFMA_F32_16X16X16_F16", 4,
+     ElementType::kF16, ElementType::kF32, 16, 16, 16},
+    {"V_WMMA_F32_16X16X16_BF16", "V_MFMA_F32_16X16X16_BF16", 4,
+     ElementType::kBF16, ElementType::kF32, 16, 16, 16},
+};
+
+const WmmaToMfmaMapping* FindWmmaToMfmaMapping(std::string_view opcode) {
+  for (const auto& entry : kWmmaToMfmaMappings) {
+    if (entry.wmma_opcode == opcode) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+// Parse element type from opcode suffix fragment (e.g., "F16", "BF16", "F32").
+ElementType ParseElementType(std::string_view fragment) {
+  if (fragment == "F16") return ElementType::kF16;
+  if (fragment == "BF16") return ElementType::kBF16;
+  if (fragment == "F32") return ElementType::kF32;
+  if (fragment == "F64") return ElementType::kF64;
+  if (fragment == "I8" || fragment == "IU8") return ElementType::kI8;
+  if (fragment == "I32") return ElementType::kI32;
+  if (fragment == "FP8") return ElementType::kFP8_E4M3;
+  if (fragment == "BF8") return ElementType::kBF8;
+  return ElementType::kNone;
+}
+
 // --- FP8/BF8 conversion lowering classification ---
 
 // Scalar FP8/BF8 conversions that produce a single F32/F16 result.
@@ -146,6 +189,20 @@ LoweringKind ClassifyLoweringKind(std::string_view opcode,
 
   if (family == SemanticFamily::kTranspose) {
     return LoweringKind::kApproximateTranspose;
+  }
+
+  // WMMA -> MFMA tile-matched lowering.
+  if (family == SemanticFamily::kWmma) {
+    if (FindWmmaToMfmaMapping(opcode) != nullptr) {
+      return LoweringKind::kWmmaToMfma;
+    }
+  }
+
+  // Split barrier -> monolithic barrier lowering.
+  if (family == SemanticFamily::kBarrier) {
+    if (IsSplitBarrierSignal(opcode) || IsSplitBarrierWait(opcode)) {
+      return LoweringKind::kBarrierSplitToMonolithic;
+    }
   }
 
   return LoweringKind::kNone;
@@ -372,7 +429,11 @@ TranslationStatus SemanticLowering::ClassifyForLowering(
       if (instruction.barrier_kind == BarrierKind::kMonolithic) {
         return TranslationStatus::kRequiresSemanticLowering;
       }
-      // Split barriers require runtime support.
+      // Split barriers can be lowered to monolithic.
+      if (instruction.lowering_kind ==
+          LoweringKind::kBarrierSplitToMonolithic) {
+        return TranslationStatus::kRequiresSemanticLowering;
+      }
       return TranslationStatus::kBlockedOnRuntime;
 
     case SemanticFamily::kTensorMemory:
@@ -386,19 +447,18 @@ TranslationStatus SemanticLowering::ClassifyForLowering(
       return TranslationStatus::kCoverageOnly;
 
     case SemanticFamily::kWmma:
-      // WMMA->MFMA lowering requires ACCVGPR support.
-      if (instruction.prerequisites.requires_accvgpr_support) {
-        return TranslationStatus::kBlockedOnRuntime;
+      // WMMA with a validated MFMA tile match can be lowered.
+      if (instruction.lowering_kind == LoweringKind::kWmmaToMfma) {
+        return TranslationStatus::kRequiresSemanticLowering;
       }
-      return TranslationStatus::kRequiresSemanticLowering;
+      // WMMA without a matching MFMA is coverage-only.
+      return TranslationStatus::kCoverageOnly;
 
     case SemanticFamily::kSwmmac:
-      return TranslationStatus::kBlockedOnRuntime;
+      return TranslationStatus::kCoverageOnly;
 
     case SemanticFamily::kMfma:
-      if (instruction.prerequisites.requires_accvgpr_support) {
-        return TranslationStatus::kBlockedOnRuntime;
-      }
+      // MFMA instructions can be lowered (ACCVGPR support is now available).
       return TranslationStatus::kRequiresSemanticLowering;
 
     case SemanticFamily::kFp8Bf8:
@@ -467,6 +527,43 @@ bool SemanticLowering::LowerToTarget(
       return true;
     }
 
+    case LoweringKind::kWmmaToMfma: {
+      // WMMA -> MFMA lowering: bracket the MFMA with ACCVGPR transfers.
+      // Emit: V_ACCVGPR_WRITE + V_MFMA_* + V_ACCVGPR_READ
+      const auto* mapping = FindWmmaToMfmaMapping(instruction.opcode);
+      if (mapping == nullptr) {
+        if (error_message != nullptr) {
+          *error_message = "No MFMA mapping for WMMA opcode.";
+        }
+        return false;
+      }
+      // 1. V_ACCVGPR_WRITE: move accumulator input from VGPR to ACCVGPR.
+      output->push_back(DecodedInstruction::Nullary("V_ACCVGPR_WRITE"));
+      // 2. V_MFMA_*: the matched MFMA instruction.
+      output->push_back(DecodedInstruction::Nullary(mapping->mfma_opcode));
+      // 3. V_ACCVGPR_READ: move result from ACCVGPR to VGPR.
+      output->push_back(DecodedInstruction::Nullary("V_ACCVGPR_READ"));
+      return true;
+    }
+
+    case LoweringKind::kBarrierSplitToMonolithic: {
+      // Split barrier -> monolithic barrier lowering.
+      if (instruction.barrier_kind == BarrierKind::kSplitSignal) {
+        // Signal is implicit in the subsequent S_BARRIER; emit NOP.
+        output->push_back(DecodedInstruction::Nullary("S_NOP"));
+      } else if (instruction.barrier_kind == BarrierKind::kSplitWait) {
+        // Wait becomes a full monolithic barrier.
+        output->push_back(DecodedInstruction::Nullary("S_BARRIER"));
+      } else {
+        if (error_message != nullptr) {
+          *error_message =
+              "Barrier split-to-monolithic lowering requires split barrier.";
+        }
+        return false;
+      }
+      return true;
+    }
+
     case LoweringKind::kNone:
       break;
   }
@@ -509,13 +606,22 @@ bool SemanticLowering::LiftFromDecoded(
       std::find(wave_sensitive.begin(), wave_sensitive.end(),
                 instruction.opcode) != wave_sensitive.end();
 
-  // Matrix instruction prerequisites.
+  // Matrix instruction metadata.
   if (output->family == SemanticFamily::kMfma) {
-    output->prerequisites.requires_accvgpr_support = true;
     output->fragment_layout = MatrixFragmentLayout::kAccumulator;
   }
   if (output->family == SemanticFamily::kWmma) {
-    output->prerequisites.requires_accvgpr_support = true;
+    output->fragment_layout = MatrixFragmentLayout::kAccumulator;
+    // Populate tile dimensions and element types from the mapping table.
+    const auto* mapping = FindWmmaToMfmaMapping(instruction.opcode);
+    if (mapping != nullptr) {
+      output->matrix_m = mapping->m;
+      output->matrix_n = mapping->n;
+      output->matrix_k = mapping->k;
+      output->input_element_type = mapping->input_type;
+      output->output_element_type = mapping->output_type;
+      output->lowered_opcode = mapping->mfma_opcode;
+    }
   }
   if (output->family == SemanticFamily::kSwmmac) {
     output->prerequisites.requires_accvgpr_support = true;
@@ -531,11 +637,8 @@ bool SemanticLowering::LiftFromDecoded(
     }
   }
 
-  // Split barrier prerequisites.
-  if (output->barrier_kind == BarrierKind::kSplitSignal ||
-      output->barrier_kind == BarrierKind::kSplitWait) {
-    output->prerequisites.requires_split_barrier_runtime = true;
-  }
+  // Split barriers no longer require a runtime prerequisite; they are
+  // lowered to monolithic S_BARRIER via kBarrierSplitToMonolithic.
 
   // FP8/BF8 prerequisites.
   if (output->family == SemanticFamily::kFp8Bf8) {
