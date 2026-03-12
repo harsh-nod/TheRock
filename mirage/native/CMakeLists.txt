@@ -26,6 +26,9 @@ add_library(mirage_sim_core STATIC
   src/isa/jit/gfx1250_stub_ingress.cc
   src/isa/jit/translation_rules.cc
   src/isa/jit/wave_adapter.cc
+  src/isa/jit/hazard_model.cc
+  src/isa/jit/hazard_pass.cc
+  src/isa/jit/peephole_pass.cc
   src/isa/jit/semantic_lowering.cc
   src/simdojo_dispatch_harness.cc
   src/single_gpu_simulator.cc
@@ -150,3 +153,22 @@ add_executable(mirage_jit_semantic_lowering_phase5_test
 target_link_libraries(mirage_jit_semantic_lowering_phase5_test PRIVATE mirage_sim_core)
 
 add_test(NAME mirage_jit_semantic_lowering_phase5_test COMMAND mirage_jit_semantic_lowering_phase5_test)
+
+add_executable(mirage_jit_hazard_model_test
+  tests/isa/jit/hazard_model_test.cc
+)
+target_link_libraries(mirage_jit_hazard_model_test PRIVATE mirage_sim_core)
+
+add_executable(mirage_jit_hazard_pass_test
+  tests/isa/jit/hazard_pass_test.cc
+)
+target_link_libraries(mirage_jit_hazard_pass_test PRIVATE mirage_sim_core)
+
+add_executable(mirage_jit_peephole_pass_test
+  tests/isa/jit/peephole_pass_test.cc
+)
+target_link_libraries(mirage_jit_peephole_pass_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_jit_hazard_model_test COMMAND mirage_jit_hazard_model_test)
+add_test(NAME mirage_jit_hazard_pass_test COMMAND mirage_jit_hazard_pass_test)
+add_test(NAME mirage_jit_peephole_pass_test COMMAND mirage_jit_peephole_pass_test)

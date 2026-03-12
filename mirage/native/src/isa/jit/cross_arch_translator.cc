@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <string>
 
+#include "lib/sim/isa/jit/hazard_model.h"
+#include "lib/sim/isa/jit/hazard_pass.h"
+#include "lib/sim/isa/jit/peephole_pass.h"
+
 namespace mirage::sim::isa::jit {
 
 namespace {
@@ -17,6 +21,35 @@ std::uint16_t VccSgprForArch(std::uint8_t arch) {
       return WaveAdapter::kGfx1250VccSgpr;
     default:
       return WaveAdapter::kGfx950VccSgpr;
+  }
+}
+
+void ComputeRegisterPressure(
+    const std::vector<DecodedInstruction>& program,
+    TranslationStatistics* stats) {
+  for (const auto& instr : program) {
+    for (std::uint8_t i = 0; i < instr.operand_count; ++i) {
+      const auto& op = instr.operands[i];
+      switch (op.kind) {
+        case OperandKind::kSgpr:
+          if (op.index > stats->max_sgpr_index) {
+            stats->max_sgpr_index = op.index;
+          }
+          break;
+        case OperandKind::kVgpr:
+          if (op.index > stats->max_vgpr_index) {
+            stats->max_vgpr_index = op.index;
+          }
+          break;
+        case OperandKind::kAccvgpr:
+          if (op.index > stats->max_accvgpr_index) {
+            stats->max_accvgpr_index = op.index;
+          }
+          break;
+        case OperandKind::kImm32:
+          break;
+      }
+    }
   }
 }
 
@@ -131,6 +164,20 @@ TranslationResult CrossArchTranslator::Translate(
   result.contains_lds_instructions = has_lds;
 
   if (all_executable && !source_program.empty()) {
+    // Apply hazard pass before branch fixup (changes instruction count).
+    if (config_.hazard_policy != HazardPolicy::kPassthrough) {
+      const HazardModel* source_model =
+          GetHazardModel(config_.target_arch);  // source hazards in output
+      const HazardModel* target_model = GetHazardModel(config_.target_arch);
+      HazardPass::Apply(config_.hazard_policy, source_model, target_model,
+                        &result.translated_program, &result.diagnostics,
+                        &result.statistics.hazard_stats);
+    }
+
+    // Apply peephole pass (changes instruction count).
+    PeepholePass::Apply(&result.translated_program, &result.diagnostics,
+                        &result.statistics.peephole_stats);
+
     ApplyBranchFixup(&result.translated_program, result.diagnostics);
     result.top_level_status = TranslationStatus::kRewrittenWithFixup;
     result.is_executable = true;
@@ -143,6 +190,18 @@ TranslationResult CrossArchTranslator::Translate(
     result.top_level_status = TranslationStatus::kUnsupported;
     result.is_executable = false;
   }
+
+  // Compute statistics.
+  result.statistics.input_instruction_count =
+      static_cast<std::uint32_t>(source_program.size());
+  result.statistics.output_instruction_count =
+      static_cast<std::uint32_t>(result.translated_program.size());
+  if (!source_program.empty()) {
+    result.statistics.expansion_ratio =
+        static_cast<float>(result.translated_program.size()) /
+        static_cast<float>(source_program.size());
+  }
+  ComputeRegisterPressure(result.translated_program, &result.statistics);
 
   return result;
 }

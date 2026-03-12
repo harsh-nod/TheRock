@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "lib/sim/isa/common/decoded_instruction.h"
+#include "lib/sim/isa/jit/hazard_pass.h"
+#include "lib/sim/isa/jit/peephole_pass.h"
 #include "lib/sim/isa/jit/semantic_lowering.h"
 #include "lib/sim/isa/jit/translation_diagnostics.h"
 #include "lib/sim/isa/jit/translation_rules.h"
@@ -20,12 +22,6 @@ enum class TranslationMode : std::uint8_t {
   kExecutableStrict,
   kCoverageOnly,
   kApproximateExperimental,
-};
-
-enum class HazardPolicy : std::uint8_t {
-  kPassthrough,
-  kStripSource,
-  kRetarget,
 };
 
 struct TranslationConfig {
@@ -71,6 +67,17 @@ struct CapabilitySummary {
   }
 };
 
+struct TranslationStatistics {
+  float expansion_ratio = 1.0f;
+  std::uint32_t input_instruction_count = 0;
+  std::uint32_t output_instruction_count = 0;
+  std::uint16_t max_sgpr_index = 0;
+  std::uint16_t max_vgpr_index = 0;
+  std::uint16_t max_accvgpr_index = 0;
+  HazardPassStats hazard_stats;
+  PeepholeStats peephole_stats;
+};
+
 struct TranslationResult {
   TranslationStatus top_level_status = TranslationStatus::kUnsupported;
   std::vector<DecodedInstruction> translated_program;
@@ -90,6 +97,7 @@ struct TranslationResult {
   // unsupported for translation, so this flag will only be set when the
   // program is NOT executable.
   bool contains_lds_instructions = false;
+  TranslationStatistics statistics;
 };
 
 class CrossArchTranslator {

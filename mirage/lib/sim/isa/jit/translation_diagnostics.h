@@ -48,6 +48,12 @@ enum class RejectionReason : std::uint8_t {
   kLdsTouching,
 };
 
+enum class HazardPolicy : std::uint8_t {
+  kPassthrough,
+  kStripSource,
+  kRetarget,
+};
+
 struct InstructionDiagnostic {
   std::size_t source_index = 0;
   std::string_view source_opcode;

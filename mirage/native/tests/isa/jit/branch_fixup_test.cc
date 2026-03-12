@@ -18,7 +18,7 @@ using namespace mirage::sim::isa;
 using namespace mirage::sim::isa::jit;
 
 bool TestIdentityTranslationPreservesBranches() {
-  // A simple program: mov, branch, endpgm.
+  // A simple program: mov, branch, mov, endpgm.
   // With 1:1 identity translation, branch offsets should be preserved.
   std::vector<DecodedInstruction> program = {
       DecodedInstruction::Unary("S_MOV_B32",
@@ -26,7 +26,9 @@ bool TestIdentityTranslationPreservesBranches() {
                                 InstructionOperand::Imm32(42)),
       DecodedInstruction::OneOperand("S_BRANCH",
                                      InstructionOperand::Imm32(1)),
-      DecodedInstruction::Nullary("S_NOP"),
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(1),
+                                InstructionOperand::Imm32(0)),
       DecodedInstruction::Nullary("S_ENDPGM"),
   };
 
