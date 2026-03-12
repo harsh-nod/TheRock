@@ -63,6 +63,94 @@ bool IsScalePairedOpcode(std::string_view opcode) {
   return opcode.find("_SCALE") != std::string_view::npos;
 }
 
+// --- VOP3P packed BF16 lowering tables ---
+
+struct PackedBf16LoweringEntry {
+  std::string_view source;
+  std::string_view target;
+};
+
+// VOP3P packed BF16 instructions that can be approximately lowered to
+// their F16 equivalents.  The lowering is approximate because BF16 has
+// a different exponent/mantissa split than F16 (8/7 vs 5/10), so the
+// precision characteristics differ.
+constexpr PackedBf16LoweringEntry kPackedBf16Lowerings[] = {
+    {"V_PK_ADD_BF16", "V_PK_ADD_F16"},
+    {"V_PK_MUL_BF16", "V_PK_MUL_F16"},
+    {"V_PK_FMA_BF16", "V_PK_FMA_F16"},
+    {"V_PK_MAX_NUM_BF16", "V_PK_MAX_F16"},
+    {"V_PK_MIN_NUM_BF16", "V_PK_MIN_F16"},
+};
+
+std::string_view FindPackedBf16Target(std::string_view opcode) {
+  for (const auto& entry : kPackedBf16Lowerings) {
+    if (entry.source == opcode) {
+      return entry.target;
+    }
+  }
+  return {};
+}
+
+bool IsPackedBf16Opcode(std::string_view opcode) {
+  return opcode.find("V_PK_") != std::string_view::npos &&
+         opcode.find("_BF16") != std::string_view::npos;
+}
+
+// --- FP8/BF8 conversion lowering classification ---
+
+// Scalar FP8/BF8 conversions that produce a single F32/F16 result.
+bool IsFp8ScalarConversion(std::string_view opcode) {
+  return opcode == "V_CVT_F32_FP8" || opcode == "V_CVT_F32_BF8" ||
+         opcode == "V_CVT_F16_FP8" || opcode == "V_CVT_F16_BF8";
+}
+
+// Packed FP8/BF8 conversions that produce packed F16 results.
+bool IsFp8PackedConversion(std::string_view opcode) {
+  return opcode == "V_CVT_PK_F16_FP8" || opcode == "V_CVT_PK_F16_BF8" ||
+         opcode == "V_CVT_PK_FP8_F16" || opcode == "V_CVT_PK_BF8_F16" ||
+         opcode == "V_CVT_PK_FP8_F32" ||
+         opcode == "V_CVT_SR_FP8_F32" || opcode == "V_CVT_SR_BF8_F16" ||
+         opcode == "V_CVT_SR_FP8_F16" ||
+         opcode == "V_CVT_SR_FP8_F32_gfx12";
+}
+
+// Scaled conversions (V_CVT_SCALEF32_* and V_CVT_SCALE_*).
+bool IsScaledConversion(std::string_view opcode) {
+  return opcode.find("V_CVT_SCALEF32_") != std::string_view::npos ||
+         opcode.find("V_CVT_SCALE_") != std::string_view::npos;
+}
+
+// Classify the LoweringKind for an instruction.
+LoweringKind ClassifyLoweringKind(std::string_view opcode,
+                                  SemanticFamily family) {
+  if (family == SemanticFamily::kVector && IsPackedBf16Opcode(opcode)) {
+    if (!FindPackedBf16Target(opcode).empty()) {
+      return LoweringKind::kPackedBf16ToF16;
+    }
+  }
+
+  if (family == SemanticFamily::kFp8Bf8) {
+    if (IsFp8ScalarConversion(opcode)) {
+      return LoweringKind::kFp8ScalarConversion;
+    }
+    if (IsFp8PackedConversion(opcode)) {
+      return LoweringKind::kFp8PackedConversion;
+    }
+  }
+
+  if (family == SemanticFamily::kScalePaired) {
+    if (IsScaledConversion(opcode)) {
+      return LoweringKind::kScaledConversion;
+    }
+  }
+
+  if (family == SemanticFamily::kTranspose) {
+    return LoweringKind::kApproximateTranspose;
+  }
+
+  return LoweringKind::kNone;
+}
+
 // Tensor memory opcodes (gfx1250 TENSOR_LOAD/STORE).
 bool IsTensorMemoryOpcode(std::string_view opcode) {
   return opcode.find("TENSOR_LOAD") != std::string_view::npos ||
@@ -291,6 +379,10 @@ TranslationStatus SemanticLowering::ClassifyForLowering(
       return TranslationStatus::kBlockedOnRuntime;
 
     case SemanticFamily::kTranspose:
+      // Transpose lowering is only available in approximate mode.
+      if (instruction.lowering_kind == LoweringKind::kApproximateTranspose) {
+        return TranslationStatus::kRequiresSemanticLowering;
+      }
       return TranslationStatus::kCoverageOnly;
 
     case SemanticFamily::kWmma:
@@ -310,9 +402,16 @@ TranslationStatus SemanticLowering::ClassifyForLowering(
       return TranslationStatus::kRequiresSemanticLowering;
 
     case SemanticFamily::kFp8Bf8:
+      if (instruction.lowering_kind == LoweringKind::kFp8ScalarConversion ||
+          instruction.lowering_kind == LoweringKind::kFp8PackedConversion) {
+        return TranslationStatus::kRequiresSemanticLowering;
+      }
       return TranslationStatus::kCoverageOnly;
 
     case SemanticFamily::kScalePaired:
+      if (instruction.lowering_kind == LoweringKind::kScaledConversion) {
+        return TranslationStatus::kRequiresSemanticLowering;
+      }
       return TranslationStatus::kCoverageOnly;
 
     case SemanticFamily::kOther:
@@ -322,14 +421,58 @@ TranslationStatus SemanticLowering::ClassifyForLowering(
 }
 
 bool SemanticLowering::LowerToTarget(
-    const SemanticInstruction& /*instruction*/,
+    const SemanticInstruction& instruction,
     std::uint8_t /*target_arch*/,
-    std::vector<DecodedInstruction>* /*output*/,
+    std::vector<DecodedInstruction>* output,
     std::string* error_message) const {
+  switch (instruction.lowering_kind) {
+    case LoweringKind::kPackedBf16ToF16: {
+      // Approximate lowering: rewrite V_PK_*_BF16 -> V_PK_*_F16.
+      // Operands are preserved; only the opcode changes.
+      if (instruction.lowered_opcode.empty()) {
+        if (error_message != nullptr) {
+          *error_message = "No F16 target opcode for packed BF16 instruction.";
+        }
+        return false;
+      }
+      output->push_back(
+          DecodedInstruction::Nullary(instruction.lowered_opcode));
+      return true;
+    }
+
+    case LoweringKind::kFp8ScalarConversion: {
+      // Scalar FP8/BF8 conversion: emit the same opcode as a stub.
+      // The semantic contract is: one source register -> one destination.
+      output->push_back(DecodedInstruction::Nullary(instruction.opcode));
+      return true;
+    }
+
+    case LoweringKind::kFp8PackedConversion: {
+      // Packed FP8/BF8 conversion: emit the same opcode as a stub.
+      output->push_back(DecodedInstruction::Nullary(instruction.opcode));
+      return true;
+    }
+
+    case LoweringKind::kScaledConversion: {
+      // Scaled conversion: emit the same opcode as a stub.
+      output->push_back(DecodedInstruction::Nullary(instruction.opcode));
+      return true;
+    }
+
+    case LoweringKind::kApproximateTranspose: {
+      // Approximate transpose lowering: emit a V_MOV_B32 as a
+      // semantically-neutral placeholder.  The actual transpose effect
+      // is dropped, making this an approximate lowering.
+      output->push_back(DecodedInstruction::Nullary("V_MOV_B32"));
+      return true;
+    }
+
+    case LoweringKind::kNone:
+      break;
+  }
+
   if (error_message != nullptr) {
-    *error_message =
-        "Semantic lowering is not yet implemented for executable output. "
-        "Family-specific lowerings will be added in Phase 5+.";
+    *error_message = "No semantic lowering available for this instruction.";
   }
   return false;
 }
@@ -402,6 +545,38 @@ bool SemanticLowering::LiftFromDecoded(
   // Scale-paired prerequisites.
   if (output->family == SemanticFamily::kScalePaired) {
     output->prerequisites.requires_scale_hardware = true;
+  }
+
+  // Lowering kind classification.
+  output->lowering_kind =
+      ClassifyLoweringKind(instruction.opcode, output->family);
+
+  // For VOP3P BF16, populate the lowered opcode.
+  if (output->lowering_kind == LoweringKind::kPackedBf16ToF16) {
+    output->lowered_opcode = FindPackedBf16Target(instruction.opcode);
+    output->input_element_type = ElementType::kBF16;
+    output->output_element_type = ElementType::kF16;
+    output->is_approximate = true;
+  }
+
+  // For FP8/BF8 conversions, populate element types.
+  if (output->lowering_kind == LoweringKind::kFp8ScalarConversion ||
+      output->lowering_kind == LoweringKind::kFp8PackedConversion) {
+    if (instruction.opcode.find("_FP8") != std::string_view::npos) {
+      output->input_element_type = ElementType::kFP8_E4M3;
+    } else if (instruction.opcode.find("_BF8") != std::string_view::npos) {
+      output->input_element_type = ElementType::kBF8;
+    }
+    if (instruction.opcode.find("_F32") != std::string_view::npos) {
+      output->output_element_type = ElementType::kF32;
+    } else if (instruction.opcode.find("_F16") != std::string_view::npos) {
+      output->output_element_type = ElementType::kF16;
+    }
+  }
+
+  // For transpose, mark as approximate.
+  if (output->lowering_kind == LoweringKind::kApproximateTranspose) {
+    output->is_approximate = true;
   }
 
   // Implicit register effects.

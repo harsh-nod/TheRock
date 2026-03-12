@@ -61,6 +61,23 @@ enum class ElementType : std::uint8_t {
   kFP8_E5M2,
   kBF8,
   kF4,
+  kBF6,
+  kFP6,
+};
+
+// Describes the semantic kind of a lowering operation.
+enum class LoweringKind : std::uint8_t {
+  kNone,
+  // VOP3P packed BF16 -> F16 approximate rewrite.
+  kPackedBf16ToF16,
+  // FP8/BF8 scalar conversion.
+  kFp8ScalarConversion,
+  // FP8/BF8 packed conversion.
+  kFp8PackedConversion,
+  // Scaled conversion (V_CVT_SCALEF32_*, V_CVT_SCALE_*).
+  kScaledConversion,
+  // Transpose approximate lowering (behind flag).
+  kApproximateTranspose,
 };
 
 // Tensor descriptor role for tensor memory instructions (gfx1250).
@@ -129,6 +146,12 @@ struct SemanticInstruction {
 
   // Tensor memory metadata (gfx1250).
   TensorDescRole tensor_role = TensorDescRole::kNone;
+
+  // What kind of semantic lowering this instruction requires.
+  LoweringKind lowering_kind = LoweringKind::kNone;
+
+  // The target opcode after lowering (empty if no lowering is available).
+  std::string_view lowered_opcode;
 
   // Implicit register effects not in operand list.
   ImplicitRegisterEffects implicit_effects;

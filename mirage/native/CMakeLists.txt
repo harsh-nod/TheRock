@@ -143,3 +143,10 @@ add_executable(mirage_jit_gfx1250_coverage_test
 target_link_libraries(mirage_jit_gfx1250_coverage_test PRIVATE mirage_sim_core)
 
 add_test(NAME mirage_jit_gfx1250_coverage_test COMMAND mirage_jit_gfx1250_coverage_test)
+
+add_executable(mirage_jit_semantic_lowering_phase5_test
+  tests/isa/jit/semantic_lowering_phase5_test.cc
+)
+target_link_libraries(mirage_jit_semantic_lowering_phase5_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_jit_semantic_lowering_phase5_test COMMAND mirage_jit_semantic_lowering_phase5_test)

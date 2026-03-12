@@ -473,7 +473,7 @@ bool TestClassifyInstructionWithSemanticFallthrough() {
   TranslationStatus mfma_status =
       translator.ClassifyInstructionWithSemantic("V_MFMA_F32_16X16X4_F32");
 
-  // V_TRANSPOSE_B32 has no rule -> coverage-only.
+  // V_TRANSPOSE_B32 has no rule -> requires semantic lowering (Phase 5).
   TranslationStatus transpose_status =
       translator.ClassifyInstructionWithSemantic("V_TRANSPOSE_B32");
 
@@ -485,8 +485,9 @@ bool TestClassifyInstructionWithSemanticFallthrough() {
                 "S_MOV_B32 should be identity via fast path") &&
          Expect(mfma_status == TranslationStatus::kBlockedOnRuntime,
                 "V_MFMA should be blocked on runtime via semantic") &&
-         Expect(transpose_status == TranslationStatus::kCoverageOnly,
-                "V_TRANSPOSE should be coverage-only via semantic") &&
+         Expect(transpose_status ==
+                    TranslationStatus::kRequiresSemanticLowering,
+                "V_TRANSPOSE should require semantic lowering") &&
          Expect(tensor_status == TranslationStatus::kBlockedOnRuntime,
                 "TENSOR_LOAD should be blocked on runtime via semantic");
 }
