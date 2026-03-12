@@ -18,6 +18,7 @@ add_library(mirage_sim_core STATIC
   src/mirage_sim_core.cc
   src/isa/gfx950/interpreter.cc
   src/isa/jit/translation_rules.cc
+  src/isa/jit/wave_adapter.cc
   src/isa/jit/semantic_lowering.cc
   src/simdojo_dispatch_harness.cc
   src/single_gpu_simulator.cc
@@ -90,4 +91,10 @@ add_executable(mirage_jit_translation_rules_test
 )
 target_link_libraries(mirage_jit_translation_rules_test PRIVATE mirage_sim_core)
 
+add_executable(mirage_jit_wave_adapter_test
+  tests/isa/jit/wave_adapter_test.cc
+)
+target_link_libraries(mirage_jit_wave_adapter_test PRIVATE mirage_sim_core)
+
 add_test(NAME mirage_jit_translation_rules_test COMMAND mirage_jit_translation_rules_test)
+add_test(NAME mirage_jit_wave_adapter_test COMMAND mirage_jit_wave_adapter_test)
