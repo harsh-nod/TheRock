@@ -72,6 +72,7 @@ TranslationResult CrossArchTranslator::Translate(
   result.translated_program.reserve(source_program.size());
 
   bool all_executable = true;
+  bool has_exec_manipulating = false;
 
   for (std::size_t i = 0; i < source_program.size(); ++i) {
     InstructionDiagnostic diagnostic;
@@ -87,6 +88,15 @@ TranslationResult CrossArchTranslator::Translate(
 
     if (!ok || !IsExecutable(diagnostic.status)) {
       all_executable = false;
+    }
+
+    // Track whether any instruction manipulates the EXEC mask.
+    if (ok) {
+      const TranslationRule* rule =
+          rule_table_.FindRule(source_program[i].opcode);
+      if (rule != nullptr && rule->is_exec_manipulating) {
+        has_exec_manipulating = true;
+      }
     }
 
     switch (diagnostic.status) {
@@ -117,6 +127,7 @@ TranslationResult CrossArchTranslator::Translate(
     result.top_level_status = TranslationStatus::kRewrittenWithFixup;
     result.is_executable = true;
     result.requires_exec_narrowing = wave_adapter_.RequiresExecNarrowing();
+    result.contains_exec_manipulating_instructions = has_exec_manipulating;
   } else if (config_.translation_mode == TranslationMode::kCoverageOnly) {
     result.top_level_status = TranslationStatus::kCoverageOnly;
     result.is_executable = false;

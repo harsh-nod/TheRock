@@ -21,6 +21,21 @@ constexpr std::array<std::string_view, 6> kWaveSensitiveOpcodes = {
     "V_MBCNT_HI_U32_B32",
 };
 
+// Opcodes that directly read or modify the EXEC mask.  These are safe in
+// wave32-in-wave64 when the initial EXEC mask is narrowed, but the
+// translator must flag their presence so callers can verify the EXEC
+// invariant is maintained throughout program execution.
+constexpr std::array<std::string_view, 8> kExecManipulatingOpcodes = {
+    "S_AND_SAVEEXEC_B64",
+    "S_OR_SAVEEXEC_B64",
+    "S_XOR_SAVEEXEC_B64",
+    "S_NAND_SAVEEXEC_B64",
+    "S_NOR_SAVEEXEC_B64",
+    "S_XNOR_SAVEEXEC_B64",
+    "S_CBRANCH_EXECZ",
+    "S_CBRANCH_EXECNZ",
+};
+
 // gfx1201 -> gfx950 identity opcodes: instructions whose opcode name,
 // operand layout, and semantics are identical across both architectures.
 // Sourced from the kTransferableAsIs bucket in the gfx1201 support catalog.
@@ -125,6 +140,10 @@ void TranslationRuleTable::BuildForDirection(std::uint8_t source_arch,
            opcode == "S_CBRANCH_SCC1" || opcode == "S_CBRANCH_VCCZ" ||
            opcode == "S_CBRANCH_VCCNZ" || opcode == "S_CBRANCH_EXECZ" ||
            opcode == "S_CBRANCH_EXECNZ");
+      rule.is_exec_manipulating =
+          std::find(kExecManipulatingOpcodes.begin(),
+                    kExecManipulatingOpcodes.end(),
+                    opcode) != kExecManipulatingOpcodes.end();
       rules_.push_back(rule);
     }
 
@@ -196,6 +215,10 @@ std::size_t TranslationRuleTable::unsupported_count() const {
 
 std::span<const std::string_view> GetWaveSensitiveOpcodes() {
   return kWaveSensitiveOpcodes;
+}
+
+std::span<const std::string_view> GetExecManipulatingOpcodes() {
+  return kExecManipulatingOpcodes;
 }
 
 }  // namespace mirage::sim::isa::jit

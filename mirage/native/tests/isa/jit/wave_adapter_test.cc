@@ -169,6 +169,27 @@ bool TestNarrowExecMask() {
   return ok;
 }
 
+bool TestExecManipulatingDetection() {
+  WaveAdapter adapter(WaveAdapter::kGfx1201VccSgpr,
+                      WaveAdapter::kGfx950VccSgpr,
+                      WavePolicy::kWave32InWave64);
+
+  return Expect(adapter.IsExecManipulating("S_AND_SAVEEXEC_B64"),
+                "S_AND_SAVEEXEC_B64 should be exec-manipulating") &&
+         Expect(adapter.IsExecManipulating("S_OR_SAVEEXEC_B64"),
+                "S_OR_SAVEEXEC_B64 should be exec-manipulating") &&
+         Expect(adapter.IsExecManipulating("S_CBRANCH_EXECZ"),
+                "S_CBRANCH_EXECZ should be exec-manipulating") &&
+         Expect(adapter.IsExecManipulating("S_CBRANCH_EXECNZ"),
+                "S_CBRANCH_EXECNZ should be exec-manipulating") &&
+         Expect(!adapter.IsExecManipulating("S_ADD_U32"),
+                "S_ADD_U32 should not be exec-manipulating") &&
+         Expect(!adapter.IsExecManipulating("V_ADD_F32"),
+                "V_ADD_F32 should not be exec-manipulating") &&
+         Expect(!adapter.IsExecManipulating("S_BRANCH"),
+                "S_BRANCH should not be exec-manipulating");
+}
+
 }  // namespace
 
 int main() {
@@ -181,6 +202,7 @@ int main() {
   ok = TestRejectPolicy() && ok;
   ok = TestExecNarrowingRequired() && ok;
   ok = TestNarrowExecMask() && ok;
+  ok = TestExecManipulatingDetection() && ok;
 
   if (ok) {
     std::cerr << "All wave_adapter tests passed.\n";

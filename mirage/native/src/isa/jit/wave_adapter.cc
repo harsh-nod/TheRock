@@ -55,6 +55,12 @@ bool WaveAdapter::IsWaveSensitive(std::string_view opcode) const {
          wave_sensitive.end();
 }
 
+bool WaveAdapter::IsExecManipulating(std::string_view opcode) const {
+  auto exec_opcodes = GetExecManipulatingOpcodes();
+  return std::find(exec_opcodes.begin(), exec_opcodes.end(), opcode) !=
+         exec_opcodes.end();
+}
+
 bool WaveAdapter::ShouldReject(std::string_view opcode) const {
   if (!IsWaveSensitive(opcode)) {
     return false;

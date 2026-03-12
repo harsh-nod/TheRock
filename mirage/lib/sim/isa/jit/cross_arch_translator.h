@@ -75,6 +75,11 @@ struct TranslationResult {
   // True when the source program was wave32 and the target is wave64.
   // The caller must narrow the EXEC mask to 32 lanes before execution.
   bool requires_exec_narrowing = false;
+  // True when the translated program contains instructions that read or
+  // modify the EXEC mask (SAVEEXEC, CBRANCH_EXEC*, etc.).  When combined
+  // with requires_exec_narrowing, the caller should be aware that the
+  // program may dynamically alter the EXEC mask width.
+  bool contains_exec_manipulating_instructions = false;
 };
 
 class CrossArchTranslator {

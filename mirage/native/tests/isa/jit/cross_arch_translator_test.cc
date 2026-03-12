@@ -231,6 +231,46 @@ bool TestExecNarrowingFlagSet() {
   return ok;
 }
 
+bool TestExecManipulatingFlagSet() {
+  // Program with SAVEEXEC should set contains_exec_manipulating_instructions.
+  std::vector<DecodedInstruction> program_with_saveexec = {
+      DecodedInstruction::Unary("S_AND_SAVEEXEC_B64",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Sgpr(2)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx1201;
+  config.target_arch = TargetArchitecture::kGfx950;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program_with_saveexec);
+
+  bool ok = Expect(result.is_executable,
+                   "SAVEEXEC program should be executable") &&
+            Expect(result.contains_exec_manipulating_instructions,
+                   "program with SAVEEXEC should flag exec-manipulating");
+
+  // Program without EXEC-manipulating instructions should not set the flag.
+  std::vector<DecodedInstruction> program_no_exec = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationResult result2 = translator.Translate(program_no_exec);
+
+  ok = Expect(result2.is_executable,
+              "simple program should be executable") &&
+       Expect(!result2.contains_exec_manipulating_instructions,
+              "program without EXEC ops should not flag exec-manipulating") &&
+       ok;
+
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -244,6 +284,7 @@ int main() {
   ok = TestArchitectureNames() && ok;
   ok = TestCacheKeyOrdering() && ok;
   ok = TestExecNarrowingFlagSet() && ok;
+  ok = TestExecManipulatingFlagSet() && ok;
 
   if (ok) {
     std::cerr << "All cross_arch_translator tests passed.\n";

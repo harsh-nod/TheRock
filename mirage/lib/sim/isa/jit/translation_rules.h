@@ -28,7 +28,14 @@ struct TranslationRule {
   bool requires_vcc_remap = false;
   bool is_wave_sensitive = false;
   bool is_branch = false;
+  // True for instructions that read or modify the EXEC mask
+  // (SAVEEXEC, WREXEC, CBRANCH_EXEC*, S_MOV_B64 to EXEC, etc.).
+  bool is_exec_manipulating = false;
 };
+
+// Returns the list of opcodes that directly manipulate the EXEC mask
+// (SAVEEXEC and WREXEC variants, EXEC-conditional branches).
+std::span<const std::string_view> GetExecManipulatingOpcodes();
 
 class TranslationRuleTable {
  public:

@@ -23,6 +23,8 @@ class WaveAdapter {
 
   bool IsWaveSensitive(std::string_view opcode) const;
 
+  bool IsExecManipulating(std::string_view opcode) const;
+
   bool ShouldReject(std::string_view opcode) const;
 
   // Returns true when the source architecture uses wave32 and the target
