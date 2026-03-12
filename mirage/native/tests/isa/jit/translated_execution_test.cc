@@ -468,6 +468,177 @@ bool TestExecMaskNarrowingWave32() {
   return ok;
 }
 
+// --- Reverse direction (gfx950 → gfx1201) tests ---
+
+TranslationConfig ReverseTranslationConfig() {
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx950;
+  config.target_arch = TargetArchitecture::kGfx1201;
+  config.translation_mode = TranslationMode::kExecutableStrict;
+  return config;
+}
+
+// Test: Translate a scalar add program from gfx950→gfx1201 and execute it.
+//   s0 = 10, s1 = 20
+//   s2 = s0 + s1   (S_ADD_U32 is identity gfx950→gfx1201)
+//   endpgm
+// Expected: s2 = 30
+// This proves the simulator can execute reverse-direction translations.
+bool TestReverseTranslatedScalarAdd() {
+  auto sim = MakeSimulator();
+  const auto queue_id = sim.CreateComputeQueue();
+
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Binary("S_ADD_U32",
+                                 InstructionOperand::Sgpr(2),
+                                 InstructionOperand::Sgpr(0),
+                                 InstructionOperand::Sgpr(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  std::vector<std::uint32_t> sgpr_state = {10u, 20u, 0u};
+  const auto sgpr_alloc = sim.AllocateMemory(memory::MemoryRegionKind::kHbm,
+                                             sgpr_state.size() * sizeof(sgpr_state[0]));
+  if (!Expect(sgpr_alloc.mapped_va != 0, "expected sgpr allocation") ||
+      !Expect(sim.WriteMemory(sgpr_alloc.mapped_va, AsBytes(sgpr_state)),
+              "expected sgpr write")) {
+    return false;
+  }
+
+  exec::SyntheticDispatchPacket packet;
+  packet.context.queue_id = queue_id;
+  packet.opcode = exec::SyntheticKernelOpcode::kGfx1201TranslatedProgram;
+  packet.args.sgpr_state_va = sgpr_alloc.mapped_va;
+  packet.args.sgpr_state_count = sgpr_state.size();
+  packet.args.exec_mask = 0x1ULL;
+
+  const auto completion = sim.SubmitTranslatedProgram(
+      queue_id, packet, program, ReverseTranslationConfig());
+
+  if (!Expect(completion.completed, "expected dispatch to complete") ||
+      !Expect(completion.success, "expected dispatch to succeed")) {
+    return false;
+  }
+
+  std::vector<std::uint32_t> result(sgpr_state.size(), 0u);
+  if (!Expect(sim.ReadMemory(sgpr_alloc.mapped_va, AsWritableBytes(result)),
+              "expected sgpr readback")) {
+    return false;
+  }
+
+  return Expect(result[0] == 10u, "expected s0 to persist") &&
+         Expect(result[1] == 20u, "expected s1 to persist") &&
+         Expect(result[2] == 30u, "expected s2 = s0 + s1 = 30 (reverse)");
+}
+
+// Test: Translate a vector add from gfx950→gfx1201 with full 64-lane execution.
+//   gfx950 is wave64, so no exec narrowing occurs. All 64 lanes should be active.
+//   v2 = v0 + v1   (V_ADD_F32 identity)
+//   v0 lanes: [1.0, 2.0, ..., 64.0]
+//   v1 lanes: [10.0, 20.0, ..., 640.0]
+//   Expected v2 lanes: [11.0, 22.0, ..., 704.0]
+bool TestReverseTranslatedVectorAdd() {
+  auto sim = MakeSimulator();
+  const auto queue_id = sim.CreateComputeQueue();
+
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Binary("V_ADD_F32",
+                                 InstructionOperand::Vgpr(2),
+                                 InstructionOperand::Vgpr(0),
+                                 InstructionOperand::Vgpr(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  constexpr std::size_t kLanes = WaveExecutionState::kLaneCount;
+  std::vector<std::uint32_t> vgpr_state(3 * kLanes, 0u);
+
+  auto to_u32 = [](float f) -> std::uint32_t {
+    std::uint32_t u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+  };
+  auto to_f32 = [](std::uint32_t u) -> float {
+    float f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+  };
+
+  // Fill v0 and v1 for all 64 lanes.
+  for (std::size_t lane = 0; lane < kLanes; ++lane) {
+    vgpr_state[0 * kLanes + lane] = to_u32(static_cast<float>(lane + 1));
+    vgpr_state[1 * kLanes + lane] = to_u32(static_cast<float>((lane + 1) * 10));
+  }
+
+  const auto vgpr_alloc = sim.AllocateMemory(memory::MemoryRegionKind::kHbm,
+                                             vgpr_state.size() * sizeof(vgpr_state[0]));
+  if (!Expect(vgpr_alloc.mapped_va != 0, "expected vgpr allocation") ||
+      !Expect(sim.WriteMemory(vgpr_alloc.mapped_va, AsBytes(vgpr_state)),
+              "expected vgpr write")) {
+    return false;
+  }
+
+  exec::SyntheticDispatchPacket packet;
+  packet.context.queue_id = queue_id;
+  packet.opcode = exec::SyntheticKernelOpcode::kGfx1201TranslatedProgram;
+  packet.args.vgpr_state_va = vgpr_alloc.mapped_va;
+  packet.args.vgpr_state_count = 3;
+  // Full 64-bit mask: no narrowing for gfx950→gfx1201 (wave64 source).
+  packet.args.exec_mask = ~0ULL;
+
+  const auto completion = sim.SubmitTranslatedProgram(
+      queue_id, packet, program, ReverseTranslationConfig());
+
+  if (!Expect(completion.completed, "expected dispatch to complete") ||
+      !Expect(completion.success, "expected dispatch to succeed")) {
+    return false;
+  }
+
+  std::vector<std::uint32_t> result(vgpr_state.size(), 0u);
+  if (!Expect(sim.ReadMemory(vgpr_alloc.mapped_va, AsWritableBytes(result)),
+              "expected vgpr readback")) {
+    return false;
+  }
+
+  bool ok = true;
+  // All 64 lanes should have v2 = v0 + v1 (no narrowing).
+  for (std::size_t lane = 0; lane < kLanes; ++lane) {
+    const float expected = static_cast<float>((lane + 1) + (lane + 1) * 10);
+    const float actual = to_f32(result[2 * kLanes + lane]);
+    if (actual != expected) {
+      std::cerr << "FAIL: v2 lane " << lane << " expected " << expected
+                << " got " << actual << '\n';
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+// Test: Reverse translation with gfx950-only opcode (MFMA) fails cleanly.
+//   V_MFMA_F32_16X16X4_F32 is not in the identity opcode set, so
+//   gfx950→gfx1201 translation should reject the program.
+bool TestReverseTranslatedUnsupportedFails() {
+  auto sim = MakeSimulator();
+  const auto queue_id = sim.CreateComputeQueue();
+
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Nullary("V_MFMA_F32_16X16X4_F32"),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  exec::SyntheticDispatchPacket packet;
+  packet.context.queue_id = queue_id;
+  packet.opcode = exec::SyntheticKernelOpcode::kGfx1201TranslatedProgram;
+  packet.args.exec_mask = 0x1ULL;
+
+  const auto completion = sim.SubmitTranslatedProgram(
+      queue_id, packet, program, ReverseTranslationConfig());
+
+  return Expect(completion.completed,
+                "expected dispatch to complete") &&
+         Expect(!completion.success,
+                "expected dispatch to fail for gfx950-only opcode in reverse");
+}
+
 }  // namespace
 
 int main() {
@@ -512,6 +683,25 @@ int main() {
   e = TestExecMaskNarrowingWave32();
   ok = e && ok;
   std::cerr << (e ? "PASS" : "FAIL") << '\n';
+
+  // Reverse direction (gfx950 → gfx1201) tests.
+  bool rs = true;
+  std::cerr << "TestReverseTranslatedScalarAdd... ";
+  rs = TestReverseTranslatedScalarAdd();
+  ok = rs && ok;
+  std::cerr << (rs ? "PASS" : "FAIL") << '\n';
+
+  bool rv = true;
+  std::cerr << "TestReverseTranslatedVectorAdd... ";
+  rv = TestReverseTranslatedVectorAdd();
+  ok = rv && ok;
+  std::cerr << (rv ? "PASS" : "FAIL") << '\n';
+
+  bool ru = true;
+  std::cerr << "TestReverseTranslatedUnsupportedFails... ";
+  ru = TestReverseTranslatedUnsupportedFails();
+  ok = ru && ok;
+  std::cerr << (ru ? "PASS" : "FAIL") << '\n';
 
   if (ok) {
     std::cerr << "All translated_execution tests passed.\n";

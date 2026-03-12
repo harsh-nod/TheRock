@@ -64,12 +64,13 @@ class SingleGpuSimulator {
   exec::CompletionRecord Submit(queue::QueueId queue_id,
                                 const exec::SyntheticDispatchPacket& packet);
 
-  // Submit a pre-decoded gfx1201 program for translation to gfx950 and
-  // execution.  The source program is translated via CrossArchTranslator,
-  // compiled by the gfx950 interpreter, and executed through the standard
-  // wave execution loop.  The dispatch packet provides register state,
-  // exec mask, and wave count as usual (code_va / code_word_count are
-  // ignored since the program is supplied directly).
+  // Submit a pre-decoded program for cross-architecture translation and
+  // execution.  The translation direction is determined by the
+  // TranslationConfig (source_arch and target_arch).  The translated
+  // program is compiled and executed by the gfx950 interpreter through
+  // the standard wave execution loop.  The dispatch packet provides
+  // register state, exec mask, and wave count as usual (code_va /
+  // code_word_count are ignored since the program is supplied directly).
   exec::CompletionRecord SubmitTranslatedProgram(
       queue::QueueId queue_id,
       const exec::SyntheticDispatchPacket& packet,

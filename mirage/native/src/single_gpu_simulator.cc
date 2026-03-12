@@ -571,7 +571,7 @@ exec::CompletionRecord SingleGpuSimulator::SubmitTranslatedProgram(
   completion.dispatch_id = dispatch_id;
   completion.completed = true;
 
-  // Translate source program to gfx950.
+  // Translate source program via the configured translation direction.
   isa::jit::CrossArchTranslator translator(translation_config);
   isa::jit::TranslationResult translation =
       translator.Translate(source_program);
@@ -582,7 +582,7 @@ exec::CompletionRecord SingleGpuSimulator::SubmitTranslatedProgram(
     return completion;
   }
 
-  // Compile translated gfx950 program.
+  // Compile translated program for gfx950 execution.
   std::string error_message;
   isa::Gfx950Interpreter interpreter;
   std::vector<isa::CompiledInstruction> compiled_program;
@@ -601,7 +601,7 @@ exec::CompletionRecord SingleGpuSimulator::SubmitTranslatedProgram(
         isa::jit::WaveAdapter::NarrowExecMask(exec_packet.args.exec_mask);
   }
 
-  // Execute through the standard gfx950 wave execution loop.
+  // Execute through the gfx950 wave execution loop.
   completion.success = ExecuteCompiledGfx950Program(exec_packet, compiled_program);
   device_.RetireTo(queue_id, next_write_ptr);
   return completion;

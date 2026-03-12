@@ -127,6 +127,19 @@ constexpr std::array<OpcodeRename, 6> kGfx1201ToGfx950Renames = {{
     {"V_SUB_CO_U32", "V_SUB_U32"},
 }};
 
+bool IsBranchOpcodeForRule(std::string_view opcode) {
+  return opcode == "S_BRANCH" || opcode == "S_CBRANCH_SCC0" ||
+         opcode == "S_CBRANCH_SCC1" || opcode == "S_CBRANCH_VCCZ" ||
+         opcode == "S_CBRANCH_VCCNZ" || opcode == "S_CBRANCH_EXECZ" ||
+         opcode == "S_CBRANCH_EXECNZ";
+}
+
+bool IsExecManipulatingForRule(std::string_view opcode) {
+  return std::find(kExecManipulatingOpcodes.begin(),
+                   kExecManipulatingOpcodes.end(),
+                   opcode) != kExecManipulatingOpcodes.end();
+}
+
 }  // namespace
 
 void TranslationRuleTable::BuildForDirection(std::uint8_t source_arch,
@@ -137,6 +150,10 @@ void TranslationRuleTable::BuildForDirection(std::uint8_t source_arch,
       source_arch == static_cast<std::uint8_t>(SourceArchitecture::kGfx1201) &&
       target_arch == static_cast<std::uint8_t>(TargetArchitecture::kGfx950);
 
+  const bool is_gfx950_to_gfx1201 =
+      source_arch == static_cast<std::uint8_t>(SourceArchitecture::kGfx950) &&
+      target_arch == static_cast<std::uint8_t>(TargetArchitecture::kGfx1201);
+
   if (is_gfx1201_to_gfx950) {
     rules_.reserve(kGfx1201ToGfx950IdentityOpcodes.size() +
                    kGfx1201ToGfx950Renames.size());
@@ -146,15 +163,8 @@ void TranslationRuleTable::BuildForDirection(std::uint8_t source_arch,
       rule.source_opcode = opcode;
       rule.target_opcode = opcode;
       rule.tier = TranslationTier::kIdentity;
-      rule.is_branch =
-          (opcode == "S_BRANCH" || opcode == "S_CBRANCH_SCC0" ||
-           opcode == "S_CBRANCH_SCC1" || opcode == "S_CBRANCH_VCCZ" ||
-           opcode == "S_CBRANCH_VCCNZ" || opcode == "S_CBRANCH_EXECZ" ||
-           opcode == "S_CBRANCH_EXECNZ");
-      rule.is_exec_manipulating =
-          std::find(kExecManipulatingOpcodes.begin(),
-                    kExecManipulatingOpcodes.end(),
-                    opcode) != kExecManipulatingOpcodes.end();
+      rule.is_branch = IsBranchOpcodeForRule(opcode);
+      rule.is_exec_manipulating = IsExecManipulatingForRule(opcode);
       rules_.push_back(rule);
     }
 
@@ -164,6 +174,25 @@ void TranslationRuleTable::BuildForDirection(std::uint8_t source_arch,
       rule.target_opcode = rename.target;
       rule.tier = TranslationTier::kRename;
       rule.requires_vcc_remap = true;
+      rules_.push_back(rule);
+    }
+  }
+
+  if (is_gfx950_to_gfx1201) {
+    // The same 132 identity opcodes are valid in both directions since they
+    // share identical names, operand layouts, and semantics.  No renames are
+    // needed: the _CO_ variants (S_ADD_CO_U32, etc.) exist only on gfx1201
+    // and never appear in gfx950 source programs.  gfx950-only opcodes
+    // (ACCVGPR, MFMA) are not in this list and remain unsupported.
+    rules_.reserve(kGfx1201ToGfx950IdentityOpcodes.size());
+
+    for (const auto& opcode : kGfx1201ToGfx950IdentityOpcodes) {
+      TranslationRule rule;
+      rule.source_opcode = opcode;
+      rule.target_opcode = opcode;
+      rule.tier = TranslationTier::kIdentity;
+      rule.is_branch = IsBranchOpcodeForRule(opcode);
+      rule.is_exec_manipulating = IsExecManipulatingForRule(opcode);
       rules_.push_back(rule);
     }
   }

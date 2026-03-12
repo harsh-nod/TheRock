@@ -355,9 +355,9 @@ bool TestStructuredRejectionReasons() {
                 "FAKE_OP should be rejected as no-rule");
 }
 
-bool TestReverseDirectionGfx950ToGfx1201NoRules() {
-  // gfx950 -> gfx1201 has no rule table entries yet.
-  // Translation should fail with all instructions unsupported.
+bool TestReverseDirectionGfx950ToGfx1201WithRules() {
+  // gfx950 -> gfx1201 now has identity rules for the shared opcode subset.
+  // S_MOV_B32 and S_ENDPGM are both in the identity list.
   std::vector<DecodedInstruction> program = {
       DecodedInstruction::Unary("S_MOV_B32",
                                 InstructionOperand::Sgpr(0),
@@ -372,21 +372,105 @@ bool TestReverseDirectionGfx950ToGfx1201NoRules() {
   CrossArchTranslator translator(config);
   TranslationResult result = translator.Translate(program);
 
-  bool ok = Expect(!result.is_executable,
-                   "gfx950->gfx1201 should not be executable (no rules)") &&
-            Expect(result.capability_summary.unsupported_count == 2,
-                   "all 2 instructions should be unsupported") &&
+  bool ok = Expect(result.is_executable,
+                   "gfx950->gfx1201 should be executable (identity rules)") &&
+            Expect(result.capability_summary.executable_count == 2,
+                   "both instructions should be executable") &&
+            Expect(result.capability_summary.unsupported_count == 0,
+                   "no instructions should be unsupported") &&
             Expect(!result.requires_exec_narrowing,
                    "gfx950->gfx1201 should not require exec narrowing");
 
-  // Coverage report should also show all unsupported.
+  // Coverage report should show all executable.
   CapabilitySummary summary = translator.ComputeCoverage(program);
-  ok = Expect(summary.unsupported_count == 2,
-              "coverage should show 2 unsupported for gfx950->gfx1201") &&
-       Expect(summary.executable_count == 0,
-              "coverage should show 0 executable for gfx950->gfx1201") && ok;
+  ok = Expect(summary.executable_count == 2,
+              "coverage should show 2 executable for gfx950->gfx1201") &&
+       Expect(summary.unsupported_count == 0,
+              "coverage should show 0 unsupported for gfx950->gfx1201") && ok;
 
   return ok;
+}
+
+bool TestReverseDirectionTranslateScalar() {
+  // Translate a scalar program in the gfx950 -> gfx1201 direction.
+  // All opcodes are in the shared identity set.
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(42)),
+      DecodedInstruction::Binary("S_ADD_U32",
+                                 InstructionOperand::Sgpr(2),
+                                 InstructionOperand::Sgpr(0),
+                                 InstructionOperand::Sgpr(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx950;
+  config.target_arch = TargetArchitecture::kGfx1201;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program);
+
+  return Expect(result.is_executable,
+                "reverse scalar translation should be executable") &&
+         Expect(result.capability_summary.executable_count == 3,
+                "all 3 instructions should be executable") &&
+         Expect(result.translated_program.size() == 3,
+                "translated program should have 3 instructions") &&
+         Expect(result.translated_program[0].opcode == "S_MOV_B32",
+                "S_MOV_B32 should remain S_MOV_B32") &&
+         Expect(result.translated_program[1].opcode == "S_ADD_U32",
+                "S_ADD_U32 should remain S_ADD_U32") &&
+         Expect(result.translated_program[2].opcode == "S_ENDPGM",
+                "S_ENDPGM should remain S_ENDPGM");
+}
+
+bool TestReverseDirectionCoverage() {
+  // Mixed program: identity opcodes + gfx950-only MFMA opcode.
+  // MFMA should be unsupported in the reverse direction (no gfx1201 equivalent).
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Unary("S_MOV_B32",
+                                InstructionOperand::Sgpr(0),
+                                InstructionOperand::Imm32(1)),
+      DecodedInstruction::Nullary("V_MFMA_F32_16X16X4_F32"),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx950;
+  config.target_arch = TargetArchitecture::kGfx1201;
+
+  CrossArchTranslator translator(config);
+  CapabilitySummary summary = translator.ComputeCoverage(program);
+
+  return Expect(summary.executable_count == 2,
+                "S_MOV_B32 + S_ENDPGM should be executable") &&
+         Expect(summary.unsupported_count == 1,
+                "V_MFMA should be unsupported in reverse direction");
+}
+
+bool TestReverseDirectionNoExecNarrowing() {
+  // gfx950 (wave64) -> gfx1201 (wave32): no exec narrowing needed.
+  std::vector<DecodedInstruction> program = {
+      DecodedInstruction::Binary("V_ADD_F32",
+                                 InstructionOperand::Vgpr(2),
+                                 InstructionOperand::Vgpr(0),
+                                 InstructionOperand::Vgpr(1)),
+      DecodedInstruction::Nullary("S_ENDPGM"),
+  };
+
+  TranslationConfig config;
+  config.source_arch = SourceArchitecture::kGfx950;
+  config.target_arch = TargetArchitecture::kGfx1201;
+
+  CrossArchTranslator translator(config);
+  TranslationResult result = translator.Translate(program);
+
+  return Expect(result.is_executable,
+                "reverse vector translation should be executable") &&
+         Expect(!result.requires_exec_narrowing,
+                "gfx950->gfx1201 should not require exec narrowing");
 }
 
 bool TestReverseDirectionArchNames() {
@@ -420,7 +504,10 @@ int main() {
   ok = TestExecManipulatingFlagSet() && ok;
   ok = TestLdsDetectionFlagSet() && ok;
   ok = TestStructuredRejectionReasons() && ok;
-  ok = TestReverseDirectionGfx950ToGfx1201NoRules() && ok;
+  ok = TestReverseDirectionGfx950ToGfx1201WithRules() && ok;
+  ok = TestReverseDirectionTranslateScalar() && ok;
+  ok = TestReverseDirectionCoverage() && ok;
+  ok = TestReverseDirectionNoExecNarrowing() && ok;
   ok = TestReverseDirectionArchNames() && ok;
 
   if (ok) {
