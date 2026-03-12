@@ -196,3 +196,10 @@ target_compile_definitions(mirage_launch_state_builder_test PRIVATE
 
 add_test(NAME mirage_code_object_loader_test COMMAND mirage_code_object_loader_test)
 add_test(NAME mirage_launch_state_builder_test COMMAND mirage_launch_state_builder_test)
+
+add_executable(mirage_jit_memory_translation_test
+  tests/isa/jit/memory_translation_test.cc
+)
+target_link_libraries(mirage_jit_memory_translation_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_jit_memory_translation_test COMMAND mirage_jit_memory_translation_test)
