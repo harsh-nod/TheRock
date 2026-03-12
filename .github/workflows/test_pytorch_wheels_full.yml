@@ -42,10 +42,14 @@ on:
         description: Space-separated test configs to run (e.g. "default", "default distributed", "default distributed inductor")
         type: string
         default: "default distributed inductor"
+      num_shards:
+        description: Number of shards per test config
+        type: string
+        default: "4"
       tests_to_include:
         description: Space-separated list of test modules to run (passed as TESTS_TO_INCLUDE to run_test.py). Leave empty to run all tests.
         type: string
-        default: "test_nn test_torch test_cuda test_unary_ufuncs test_binary_ufuncs test_autograd"
+        default: ""
 
   workflow_call:
     inputs:
@@ -79,10 +83,13 @@ on:
       test_configs:
         type: string
         default: "default distributed inductor"
+      num_shards:
+        type: string
+        default: "4"
       tests_to_include:
         description: Space-separated list of test modules to run (passed as TESTS_TO_INCLUDE to run_test.py). Leave empty to run all tests.
         type: string
-        default: "test_nn test_torch test_cuda test_unary_ufuncs test_binary_ufuncs test_autograd"
+        default: ""
 
 permissions:
   contents: read
@@ -97,7 +104,7 @@ jobs:
     steps:
       - id: generate
         run: |
-          NUM_SHARDS=4
+          NUM_SHARDS=${{ inputs.num_shards }}
           matrix='{"include":['
           first=true
           for config in ${{ inputs.test_configs }}; do
