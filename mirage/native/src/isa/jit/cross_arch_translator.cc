@@ -289,14 +289,91 @@ bool CrossArchTranslator::TranslateInstruction(
   return true;
 }
 
-bool CrossArchTranslator::ApplyBranchFixup(
-    std::vector<DecodedInstruction>* /*program*/,
-    const std::vector<InstructionDiagnostic>& /*diagnostics*/) const {
-  // In Phase 0, all translations are 1:1, so no branch target fixup is
-  // needed. Branch fixup becomes necessary when any translation produces
-  // a 1:N expansion, which shifts instruction indices and invalidates
-  // relative branch targets. This will be implemented in Phase 1.
+namespace {
+
+bool IsBranchOpcode(std::string_view opcode) {
+  return opcode == "S_BRANCH" || opcode == "S_CBRANCH_SCC0" ||
+         opcode == "S_CBRANCH_SCC1" || opcode == "S_CBRANCH_VCCZ" ||
+         opcode == "S_CBRANCH_VCCNZ" || opcode == "S_CBRANCH_EXECZ" ||
+         opcode == "S_CBRANCH_EXECNZ";
+}
+
+}  // namespace
+
+bool CrossArchTranslator::FixupBranchTargets(
+    std::vector<DecodedInstruction>* program,
+    const std::vector<InstructionDiagnostic>& diagnostics) {
+  if (program == nullptr || program->empty()) {
+    return true;
+  }
+
+  // Build a mapping from source instruction index → output instruction index.
+  // source_to_output[i] = output index where source instruction i begins.
+  // source_to_output[source_count] = program->size() (one past last).
+  const std::size_t source_count = diagnostics.size();
+  std::vector<std::size_t> source_to_output(source_count + 1);
+  for (std::size_t i = 0; i < source_count; ++i) {
+    source_to_output[i] = diagnostics[i].output_begin_index;
+  }
+  source_to_output[source_count] = program->size();
+
+  // If every source instruction produced exactly one output instruction,
+  // all offsets are already correct and we can skip adjustment.
+  if (program->size() == source_count) {
+    return true;
+  }
+
+  // For each branch instruction, adjust its relative offset to account
+  // for index shifts caused by 1:N expansions.
+  for (std::size_t diag_index = 0; diag_index < source_count; ++diag_index) {
+    const auto& diag = diagnostics[diag_index];
+
+    if (!IsBranchOpcode(diag.source_opcode)) {
+      continue;
+    }
+
+    const std::size_t output_branch_idx = diag.output_begin_index;
+    if (output_branch_idx >= program->size()) {
+      return false;
+    }
+
+    DecodedInstruction& branch_instr = (*program)[output_branch_idx];
+    if (branch_instr.operand_count == 0 ||
+        branch_instr.operands[0].kind != OperandKind::kImm32) {
+      continue;
+    }
+
+    const auto source_delta =
+        static_cast<std::int32_t>(branch_instr.operands[0].imm32);
+
+    // Branch semantics: target_pc = current_pc + 1 + delta
+    const auto source_target =
+        static_cast<std::int64_t>(diag_index) + 1 +
+        static_cast<std::int64_t>(source_delta);
+
+    if (source_target < 0 ||
+        static_cast<std::size_t>(source_target) > source_count) {
+      return false;
+    }
+
+    const std::size_t output_target_idx =
+        source_to_output[static_cast<std::size_t>(source_target)];
+
+    // new_delta = output_target_idx - (output_branch_idx + 1)
+    const auto new_delta = static_cast<std::int32_t>(
+        static_cast<std::int64_t>(output_target_idx) -
+        static_cast<std::int64_t>(output_branch_idx) - 1);
+
+    branch_instr.operands[0].imm32 = static_cast<std::uint32_t>(new_delta);
+  }
+
   return true;
+}
+
+bool CrossArchTranslator::ApplyBranchFixup(
+    std::vector<DecodedInstruction>* program,
+    const std::vector<InstructionDiagnostic>& diagnostics) const {
+  return FixupBranchTargets(program, diagnostics);
 }
 
 }  // namespace mirage::sim::isa::jit

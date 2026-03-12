@@ -97,6 +97,14 @@ class CrossArchTranslator {
   static std::string_view TranslationModeName(TranslationMode mode);
   static std::string_view TranslationStatusName(TranslationStatus status);
 
+  // Adjust branch target offsets in a translated program to account for
+  // index shifts caused by 1:N instruction expansions.  Uses diagnostics
+  // to map source instruction indices to output instruction indices.
+  // Exposed for direct unit testing.
+  static bool FixupBranchTargets(
+      std::vector<DecodedInstruction>* program,
+      const std::vector<InstructionDiagnostic>& diagnostics);
+
  private:
   bool TranslateInstruction(
       const DecodedInstruction& source,
