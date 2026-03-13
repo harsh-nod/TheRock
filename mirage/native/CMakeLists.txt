@@ -15,6 +15,11 @@ target_compile_features(simdojo PUBLIC cxx_std_20)
 add_library(mirage_sim_core STATIC
   generated/gfx950_instruction_catalog.cc
   src/isa/gfx950/binary_decoder.cc
+  src/isa/gfx1201/binary_decoder.cc
+  src/isa/gfx1201/opcode_selector.cc
+  src/isa/gfx1201/decoder_seed.cc
+  src/isa/gfx1201/architecture_profile.cc
+  src/isa/gfx1201/support_catalog.cc
   src/isa/gfx1250/bringup_profile.cc
   src/isa/gfx1250/decoder_seed_catalog.cc
   src/isa/gfx1250/stub_decoder.cc
@@ -203,3 +208,10 @@ add_executable(mirage_jit_memory_translation_test
 target_link_libraries(mirage_jit_memory_translation_test PRIVATE mirage_sim_core)
 
 add_test(NAME mirage_jit_memory_translation_test COMMAND mirage_jit_memory_translation_test)
+
+add_executable(mirage_gfx1201_binary_decoder_expansion_test
+  tests/isa/gfx1201/binary_decoder_expansion_test.cc
+)
+target_link_libraries(mirage_gfx1201_binary_decoder_expansion_test PRIVATE mirage_sim_core)
+
+add_test(NAME mirage_gfx1201_binary_decoder_expansion_test COMMAND mirage_gfx1201_binary_decoder_expansion_test)

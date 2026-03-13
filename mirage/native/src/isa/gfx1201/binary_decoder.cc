@@ -16,7 +16,7 @@ constexpr std::uint16_t kSrcVcczSgprIndex = 251;
 constexpr std::uint16_t kSrcExeczSgprIndex = 252;
 constexpr std::uint16_t kSrcSccSgprIndex = 253;
 
-constexpr std::array<std::string_view, 165> kPhase0ExecutableOpcodes{{
+constexpr std::array<std::string_view, 214> kPhase0ExecutableOpcodes{{
     "S_ENDPGM",
     "S_NOP",
     "S_ADD_U32",
@@ -182,6 +182,61 @@ constexpr std::array<std::string_view, 165> kPhase0ExecutableOpcodes{{
     "V_AND_B32",
     "V_OR_B32",
     "V_XOR_B32",
+    // VOP2 additions: vector ALU used by vector_add kernel.
+    "V_ADD_F32",
+    "V_SUB_F32",
+    "V_MUL_F32",
+    "V_LSHLREV_B64",
+    "V_ADD_CO_CI_U32",
+    // SOPP scheduling hints: gfx12-specific, no gfx950 equivalent.
+    "S_CLAUSE",
+    "S_DELAY_ALU",
+    "S_WAIT_KMCNT",
+    "S_WAIT_ALU",
+    "S_WAIT_LOADCNT",
+    "S_CODE_END",
+    // SMEM: scalar memory loads.
+    "S_LOAD_B32",
+    "S_LOAD_B64",
+    "S_LOAD_B128",
+    "S_LOAD_B256",
+    "S_BUFFER_LOAD_B32",
+    "S_BUFFER_LOAD_B64",
+    "S_BUFFER_LOAD_B128",
+    "S_BUFFER_LOAD_B256",
+    // VGLOBAL: global memory loads and stores.
+    "GLOBAL_LOAD_B32",
+    "GLOBAL_LOAD_B64",
+    "GLOBAL_LOAD_B128",
+    "GLOBAL_STORE_B32",
+    "GLOBAL_STORE_B64",
+    "GLOBAL_STORE_B128",
+    "GLOBAL_LOAD_U8",
+    "GLOBAL_LOAD_I8",
+    "GLOBAL_LOAD_U16",
+    "GLOBAL_LOAD_I16",
+    "GLOBAL_STORE_B8",
+    "GLOBAL_STORE_B16",
+    // SOP2: scalar ALU binary operations.
+    "S_AND_B32",
+    "S_AND_B64",
+    "S_OR_B32",
+    "S_OR_B64",
+    "S_XOR_B32",
+    "S_XOR_B64",
+    "S_ADD_U32",
+    "S_SUB_U32",
+    "S_ADD_I32",
+    "S_SUB_I32",
+    "S_LSHL_B32",
+    "S_LSHR_B32",
+    "S_ASHR_I32",
+    "S_MUL_I32",
+    "S_CSELECT_B32",
+    "S_CSELECT_B64",
+    // VOP3-only: gfx12-specific multiply-add and add-with-carry.
+    "V_MAD_CO_U64_U32",
+    "V_ADD_CO_U32",
 }};
 
 constexpr std::uint32_t ExtractBits(std::uint32_t value,
@@ -620,8 +675,30 @@ bool TryDecodeExecutableSeedInstruction(const Gfx1201OpcodeRoute& route,
             .WithDescriptor(MakeImmediateDescriptor(OperandRole::kSource0,
                                                    OperandSlotKind::kSource0)));
     *words_consumed = 1;
+  } else if (instruction_name == "S_CLAUSE" ||
+             instruction_name == "S_DELAY_ALU" ||
+             instruction_name == "S_WAIT_KMCNT" ||
+             instruction_name == "S_WAIT_ALU" ||
+             instruction_name == "S_WAIT_LOADCNT") {
+    // SOPP scheduling hints: 1 dword, SIMM16 at bits[15:0].
+    *instruction = DecodedInstruction::OneOperand(
+        instruction_name,
+        InstructionOperand::Imm32(ExtractBits(word, 0, 16))
+            .WithDescriptor(MakeImmediateDescriptor(OperandRole::kSource0,
+                                                   OperandSlotKind::kSource0)));
+    *words_consumed = 1;
+  } else if (instruction_name == "S_CODE_END") {
+    // SOPP with no meaningful operand (post-endpgm padding).
+    *instruction = DecodedInstruction::Nullary(instruction_name);
+    *words_consumed = 1;
   } else if (instruction_name == "S_ADD_U32" || instruction_name == "S_ADD_I32" ||
-             instruction_name == "S_SUB_U32") {
+             instruction_name == "S_SUB_U32" || instruction_name == "S_SUB_I32" ||
+             instruction_name == "S_AND_B32" || instruction_name == "S_AND_B64" ||
+             instruction_name == "S_OR_B32" || instruction_name == "S_OR_B64" ||
+             instruction_name == "S_XOR_B32" || instruction_name == "S_XOR_B64" ||
+             instruction_name == "S_LSHL_B32" || instruction_name == "S_LSHR_B32" ||
+             instruction_name == "S_ASHR_I32" || instruction_name == "S_MUL_I32" ||
+             instruction_name == "S_CSELECT_B32" || instruction_name == "S_CSELECT_B64") {
     InstructionOperand dst;
     if (!DecodeScalarDestination(ExtractBits(word, 16, 7), &dst, error_message)) {
       return false;
@@ -811,26 +888,57 @@ bool TryDecodeExecutableSeedInstruction(const Gfx1201OpcodeRoute& route,
              instruction_name == "V_CMPX_NGT_F32" ||
              instruction_name == "V_CMPX_NLE_F32" ||
              instruction_name == "V_CMPX_NLT_F32") {
-    std::size_t literal_words_consumed = 0;
-    InstructionOperand src0;
-    if (!DecodeVectorSource(ExtractBits(word, 0, 9), words.subspan(1),
-                            &literal_words_consumed, &src0, error_message)) {
-      return false;
-    }
+    const std::string_view enc_name = route.selector_rule->encoding_name;
+    if (enc_name == "ENC_VOP3") {
+      // VOP3 encoding: 2 dwords.
+      if (words.size() < 2) return false;
+      const std::uint32_t word1 = words[1];
 
-    InstructionOperand src1;
-    if (!DecodeVectorRegisterSource(ExtractBits(word, 9, 8), &src1,
-                                    error_message)) {
-      return false;
-    }
+      std::size_t src0_literal = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word1, 0, 9), words.subspan(2),
+                              &src0_literal, &src0, error_message)) {
+        return false;
+      }
 
-    *instruction = DecodedInstruction::Binary(
-        instruction_name, MakeImplicitVccDestinationOperand(),
-        DescribeSourceOperand(src0, OperandRole::kSource0,
-                              OperandSlotKind::kSource0),
-        DescribeSourceOperand(src1, OperandRole::kSource1,
-                              OperandSlotKind::kSource1));
-    *words_consumed = 1 + literal_words_consumed;
+      std::size_t src1_literal = 0;
+      InstructionOperand src1;
+      if (!DecodeVectorSource(ExtractBits(word1, 9, 9),
+                              words.subspan(2 + src0_literal),
+                              &src1_literal, &src1, error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, MakeImplicitVccDestinationOperand(),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeSourceOperand(src1, OperandRole::kSource1,
+                                OperandSlotKind::kSource1));
+      *words_consumed = 2 + src0_literal + src1_literal;
+    } else {
+      // VOPC encoding: 1 dword.
+      std::size_t literal_words_consumed = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word, 0, 9), words.subspan(1),
+                              &literal_words_consumed, &src0, error_message)) {
+        return false;
+      }
+
+      InstructionOperand src1;
+      if (!DecodeVectorRegisterSource(ExtractBits(word, 9, 8), &src1,
+                                      error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, MakeImplicitVccDestinationOperand(),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeSourceOperand(src1, OperandRole::kSource1,
+                                OperandSlotKind::kSource1));
+      *words_consumed = 1 + literal_words_consumed;
+    }
   } else if (instruction_name == "V_CMP_CLASS_F64" ||
              instruction_name == "V_CMPX_CLASS_F64") {
     std::size_t literal_words_consumed = 0;
@@ -989,6 +1097,470 @@ bool TryDecodeExecutableSeedInstruction(const Gfx1201OpcodeRoute& route,
         DescribeSourceOperand(src1, OperandRole::kSource1,
                               OperandSlotKind::kSource1));
     *words_consumed = 1 + literal_words_consumed;
+  } else if (instruction_name == "V_ADD_F32" ||
+             instruction_name == "V_SUB_F32" ||
+             instruction_name == "V_MUL_F32") {
+    // VOP2 3-operand vector ALU: dst=VDST[24:17], src0=SRC0[8:0], src1=VSRC1[16:9].
+    const std::string_view enc_name = route.selector_rule->encoding_name;
+    if (enc_name == "ENC_VOP3") {
+      // VOP3 2-dword encoding: word0 bits[7:0]=VDST, word1 bits[8:0]=SRC0,
+      // word1 bits[17:9]=SRC1, word1 bits[26:18]=SRC2.
+      if (words.size() < 2) return false;
+      const std::uint32_t word1 = words[1];
+
+      InstructionOperand dst;
+      if (!DecodeVectorDestination(ExtractBits(word, 0, 8), &dst, error_message)) {
+        return false;
+      }
+
+      std::size_t src0_literal = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word1, 0, 9), words.subspan(2),
+                              &src0_literal, &src0, error_message)) {
+        return false;
+      }
+
+      std::size_t src1_literal = 0;
+      InstructionOperand src1;
+      if (!DecodeVectorSource(ExtractBits(word1, 9, 9),
+                              words.subspan(2 + src0_literal),
+                              &src1_literal, &src1, error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, DescribeVectorDestinationOperand(dst),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeSourceOperand(src1, OperandRole::kSource1,
+                                OperandSlotKind::kSource1));
+      *words_consumed = 2 + src0_literal + src1_literal;
+    } else {
+      // VOP2 1-dword encoding.
+      InstructionOperand dst;
+      if (!DecodeVectorDestination(ExtractBits(word, 17, 8), &dst, error_message)) {
+        return false;
+      }
+
+      std::size_t literal_words_consumed = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word, 0, 9), words.subspan(1),
+                              &literal_words_consumed, &src0, error_message)) {
+        return false;
+      }
+
+      InstructionOperand src1;
+      if (!DecodeVectorRegisterSource(ExtractBits(word, 9, 8), &src1,
+                                      error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, DescribeVectorDestinationOperand(dst),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeSourceOperand(src1, OperandRole::kSource1,
+                                OperandSlotKind::kSource1));
+      *words_consumed = 1 + literal_words_consumed;
+    }
+  } else if (instruction_name == "V_LSHLREV_B64") {
+    // VOP2 encoding: 64-bit left shift. dst is a register pair.
+    const std::string_view enc_name = route.selector_rule->encoding_name;
+    if (enc_name == "ENC_VOP3") {
+      if (words.size() < 2) return false;
+      const std::uint32_t word1 = words[1];
+
+      InstructionOperand dst;
+      if (!DecodeVectorDestination(ExtractBits(word, 0, 8), &dst, error_message)) {
+        return false;
+      }
+
+      std::size_t src0_literal = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word1, 0, 9), words.subspan(2),
+                              &src0_literal, &src0, error_message)) {
+        return false;
+      }
+
+      std::size_t src1_literal = 0;
+      InstructionOperand src1;
+      if (!DecodeVectorSource(ExtractBits(word1, 9, 9),
+                              words.subspan(2 + src0_literal),
+                              &src1_literal, &src1, error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, DescribeWideVectorDestinationOperand(dst),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeWideSourceOperand(src1, OperandRole::kSource1,
+                                    OperandSlotKind::kSource1));
+      *words_consumed = 2 + src0_literal + src1_literal;
+    } else {
+      InstructionOperand dst;
+      if (!DecodeVectorDestination(ExtractBits(word, 17, 8), &dst, error_message)) {
+        return false;
+      }
+
+      std::size_t literal_words_consumed = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word, 0, 9), words.subspan(1),
+                              &literal_words_consumed, &src0, error_message)) {
+        return false;
+      }
+
+      InstructionOperand src1;
+      if (!DecodeVectorRegisterSource(ExtractBits(word, 9, 8), &src1,
+                                      error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, DescribeWideVectorDestinationOperand(dst),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeWideSourceOperand(src1, OperandRole::kSource1,
+                                    OperandSlotKind::kSource1));
+      *words_consumed = 1 + literal_words_consumed;
+    }
+  } else if (instruction_name == "V_ADD_CO_CI_U32") {
+    // VOP2/VOP3: carry-in add. Reads and writes VCC implicitly.
+    const std::string_view enc_name = route.selector_rule->encoding_name;
+    if (enc_name == "ENC_VOP3") {
+      if (words.size() < 2) return false;
+      const std::uint32_t word1 = words[1];
+
+      InstructionOperand dst;
+      if (!DecodeVectorDestination(ExtractBits(word, 0, 8), &dst, error_message)) {
+        return false;
+      }
+
+      std::size_t src0_literal = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word1, 0, 9), words.subspan(2),
+                              &src0_literal, &src0, error_message)) {
+        return false;
+      }
+
+      std::size_t src1_literal = 0;
+      InstructionOperand src1;
+      if (!DecodeVectorSource(ExtractBits(word1, 9, 9),
+                              words.subspan(2 + src0_literal),
+                              &src1_literal, &src1, error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, DescribeVectorDestinationOperand(dst),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeSourceOperand(src1, OperandRole::kSource1,
+                                OperandSlotKind::kSource1));
+      *words_consumed = 2 + src0_literal + src1_literal;
+    } else {
+      InstructionOperand dst;
+      if (!DecodeVectorDestination(ExtractBits(word, 17, 8), &dst, error_message)) {
+        return false;
+      }
+
+      std::size_t literal_words_consumed = 0;
+      InstructionOperand src0;
+      if (!DecodeVectorSource(ExtractBits(word, 0, 9), words.subspan(1),
+                              &literal_words_consumed, &src0, error_message)) {
+        return false;
+      }
+
+      InstructionOperand src1;
+      if (!DecodeVectorRegisterSource(ExtractBits(word, 9, 8), &src1,
+                                      error_message)) {
+        return false;
+      }
+
+      *instruction = DecodedInstruction::Binary(
+          instruction_name, DescribeVectorDestinationOperand(dst),
+          DescribeSourceOperand(src0, OperandRole::kSource0,
+                                OperandSlotKind::kSource0),
+          DescribeSourceOperand(src1, OperandRole::kSource1,
+                                OperandSlotKind::kSource1));
+      *words_consumed = 1 + literal_words_consumed;
+    }
+  } else if (instruction_name == "V_ADD_CO_U32") {
+    // VOP3-only: 32-bit add with carry-out to VCC.
+    // Word 0: bits[7:0]=VDST.
+    // Word 1: bits[8:0]=SRC0, bits[17:9]=SRC1.
+    if (words.size() < 2) return false;
+    const std::uint32_t word1 = words[1];
+
+    InstructionOperand dst;
+    if (!DecodeVectorDestination(ExtractBits(word, 0, 8), &dst, error_message)) {
+      return false;
+    }
+
+    std::size_t src0_literal = 0;
+    InstructionOperand src0;
+    if (!DecodeVectorSource(ExtractBits(word1, 0, 9), words.subspan(2),
+                            &src0_literal, &src0, error_message)) {
+      return false;
+    }
+
+    std::size_t src1_literal = 0;
+    InstructionOperand src1;
+    if (!DecodeVectorSource(ExtractBits(word1, 9, 9),
+                            words.subspan(2 + src0_literal),
+                            &src1_literal, &src1, error_message)) {
+      return false;
+    }
+
+    *instruction = DecodedInstruction::Binary(
+        instruction_name, DescribeVectorDestinationOperand(dst),
+        DescribeSourceOperand(src0, OperandRole::kSource0,
+                              OperandSlotKind::kSource0),
+        DescribeSourceOperand(src1, OperandRole::kSource1,
+                              OperandSlotKind::kSource1));
+    *words_consumed = 2 + src0_literal + src1_literal;
+  } else if (instruction_name == "V_MAD_CO_U64_U32") {
+    // VOP3-only: 64-bit multiply-add with carry.
+    // Word 0: bits[7:0]=VDST (register pair for 64-bit result).
+    // Word 1: bits[8:0]=SRC0, bits[17:9]=SRC1, bits[26:18]=SRC2.
+    if (words.size() < 2) return false;
+    const std::uint32_t word1 = words[1];
+
+    InstructionOperand dst;
+    if (!DecodeVectorDestination(ExtractBits(word, 0, 8), &dst, error_message)) {
+      return false;
+    }
+
+    std::size_t src0_literal = 0;
+    InstructionOperand src0;
+    if (!DecodeVectorSource(ExtractBits(word1, 0, 9), words.subspan(2),
+                            &src0_literal, &src0, error_message)) {
+      return false;
+    }
+
+    std::size_t src1_literal = 0;
+    InstructionOperand src1;
+    if (!DecodeVectorSource(ExtractBits(word1, 9, 9),
+                            words.subspan(2 + src0_literal),
+                            &src1_literal, &src1, error_message)) {
+      return false;
+    }
+
+    std::size_t src2_literal = 0;
+    InstructionOperand src2;
+    if (!DecodeVectorSource(ExtractBits(word1, 18, 9),
+                            words.subspan(2 + src0_literal + src1_literal),
+                            &src2_literal, &src2, error_message)) {
+      return false;
+    }
+
+    *instruction = DecodedInstruction{};
+    instruction->opcode = instruction_name;
+    instruction->operand_count = 4;
+    instruction->operands[0] = DescribeWideVectorDestinationOperand(dst);
+    instruction->operands[1] =
+        DescribeSourceOperand(src0, OperandRole::kSource0,
+                              OperandSlotKind::kSource0);
+    instruction->operands[2] =
+        DescribeSourceOperand(src1, OperandRole::kSource1,
+                              OperandSlotKind::kSource1);
+    instruction->operands[3] =
+        DescribeWideSourceOperand(src2, OperandRole::kSource2,
+                                  OperandSlotKind::kSource2);
+    *words_consumed = 2 + src0_literal + src1_literal + src2_literal;
+  } else if (instruction_name == "S_LOAD_B32" ||
+             instruction_name == "S_LOAD_B64" ||
+             instruction_name == "S_LOAD_B128" ||
+             instruction_name == "S_LOAD_B256" ||
+             instruction_name == "S_BUFFER_LOAD_B32" ||
+             instruction_name == "S_BUFFER_LOAD_B64" ||
+             instruction_name == "S_BUFFER_LOAD_B128" ||
+             instruction_name == "S_BUFFER_LOAD_B256") {
+    // SMEM 2-dword encoding.
+    // Word 0: bits[13:7]=SDATA/SDST (7 bits), bits[6:0]=SBASE (7 bits,
+    //         register pair index, actual register = sbase * 2).
+    // Word 1: OFFSET (21-bit unsigned immediate).
+    if (words.size() < 2) return false;
+    const std::uint32_t word1 = words[1];
+
+    const std::uint32_t sdst_raw = ExtractBits(word, 7, 7);
+    const std::uint32_t sbase_raw = ExtractBits(word, 0, 7);
+    const std::uint32_t offset = ExtractBits(word1, 0, 21);
+
+    // Determine destination width from instruction name.
+    std::uint8_t dst_width = 1;  // B32 = 1 dword
+    if (instruction_name == "S_LOAD_B64" ||
+        instruction_name == "S_BUFFER_LOAD_B64") {
+      dst_width = 2;
+    } else if (instruction_name == "S_LOAD_B128" ||
+               instruction_name == "S_BUFFER_LOAD_B128") {
+      dst_width = 4;
+    } else if (instruction_name == "S_LOAD_B256" ||
+               instruction_name == "S_BUFFER_LOAD_B256") {
+      dst_width = 8;
+    }
+
+    InstructionOperand dst =
+        InstructionOperand::Sgpr(static_cast<std::uint16_t>(sdst_raw))
+            .WithDescriptor(MakeScalarRegisterDescriptor(
+                OperandRole::kDestination, OperandSlotKind::kScalarDestination,
+                OperandAccess::kWrite, static_cast<std::uint8_t>(dst_width * 32),
+                dst_width));
+
+    // SBASE is a register pair (base address pointer).
+    InstructionOperand sbase =
+        InstructionOperand::Sgpr(static_cast<std::uint16_t>(sbase_raw * 2))
+            .WithDescriptor(MakeScalarRegisterDescriptor(
+                OperandRole::kSource0, OperandSlotKind::kSource0,
+                OperandAccess::kRead, 64, 2));
+
+    InstructionOperand imm_offset =
+        InstructionOperand::Imm32(offset)
+            .WithDescriptor(MakeImmediateDescriptor(OperandRole::kSource1,
+                                                   OperandSlotKind::kSource1));
+
+    *instruction = DecodedInstruction{};
+    instruction->opcode = instruction_name;
+    instruction->operand_count = 3;
+    instruction->operands[0] = dst;
+    instruction->operands[1] = sbase;
+    instruction->operands[2] = imm_offset;
+    *words_consumed = 2;
+  } else if (instruction_name == "GLOBAL_LOAD_B32" ||
+             instruction_name == "GLOBAL_LOAD_B64" ||
+             instruction_name == "GLOBAL_LOAD_B128" ||
+             instruction_name == "GLOBAL_LOAD_U8" ||
+             instruction_name == "GLOBAL_LOAD_I8" ||
+             instruction_name == "GLOBAL_LOAD_U16" ||
+             instruction_name == "GLOBAL_LOAD_I16") {
+    // VGLOBAL 3-dword encoding for loads (gfx12).
+    // Word 0: bits[24:14]=opcode (11 bits), bits[13:0]=OFFSET (signed 14-bit).
+    // Word 1: bits[7:0]=VDST (8 bits).
+    // Word 2: bits[7:0]=VADDR (8 bits), bits[14:8]=SADDR (7 bits, 0x7f=off).
+    if (words.size() < 3) return false;
+    const std::uint32_t word1 = words[1];
+    const std::uint32_t word2 = words[2];
+
+    const std::uint32_t vdst_raw = ExtractBits(word1, 0, 8);
+    const std::uint32_t vaddr_raw = ExtractBits(word2, 0, 8);
+    const std::uint32_t saddr_raw = ExtractBits(word2, 8, 7);
+    const std::uint32_t offset = ExtractBits(word, 0, 14);
+
+    // Determine destination width.
+    std::uint8_t dst_components = 1;
+    if (instruction_name == "GLOBAL_LOAD_B64") {
+      dst_components = 2;
+    } else if (instruction_name == "GLOBAL_LOAD_B128") {
+      dst_components = 4;
+    }
+
+    InstructionOperand dst =
+        InstructionOperand::Vgpr(static_cast<std::uint16_t>(vdst_raw))
+            .WithDescriptor(MakeVectorRegisterDescriptor(
+                OperandRole::kDestination, OperandSlotKind::kDestination,
+                OperandAccess::kWrite,
+                static_cast<std::uint8_t>(dst_components * 32), dst_components));
+
+    InstructionOperand vaddr =
+        InstructionOperand::Vgpr(static_cast<std::uint16_t>(vaddr_raw))
+            .WithDescriptor(MakeVectorRegisterDescriptor(
+                OperandRole::kSource0, OperandSlotKind::kSource0,
+                OperandAccess::kRead, 64, 2));
+
+    *instruction = DecodedInstruction{};
+    instruction->opcode = instruction_name;
+
+    if (saddr_raw != 0x7f) {
+      InstructionOperand saddr =
+          InstructionOperand::Sgpr(static_cast<std::uint16_t>(saddr_raw * 2))
+              .WithDescriptor(MakeScalarRegisterDescriptor(
+                  OperandRole::kSource1, OperandSlotKind::kSource1,
+                  OperandAccess::kRead, 64, 2));
+      instruction->operand_count = 4;
+      instruction->operands[0] = dst;
+      instruction->operands[1] = vaddr;
+      instruction->operands[2] = saddr;
+      instruction->operands[3] =
+          InstructionOperand::Imm32(offset)
+              .WithDescriptor(MakeImmediateDescriptor(
+                  OperandRole::kSource2, OperandSlotKind::kSource2));
+    } else {
+      instruction->operand_count = 3;
+      instruction->operands[0] = dst;
+      instruction->operands[1] = vaddr;
+      instruction->operands[2] =
+          InstructionOperand::Imm32(offset)
+              .WithDescriptor(MakeImmediateDescriptor(
+                  OperandRole::kSource1, OperandSlotKind::kSource1));
+    }
+    *words_consumed = 3;
+  } else if (instruction_name == "GLOBAL_STORE_B32" ||
+             instruction_name == "GLOBAL_STORE_B64" ||
+             instruction_name == "GLOBAL_STORE_B128" ||
+             instruction_name == "GLOBAL_STORE_B8" ||
+             instruction_name == "GLOBAL_STORE_B16") {
+    // VGLOBAL 3-dword encoding for stores (gfx12).
+    // Word 0: bits[24:14]=opcode (11 bits), bits[13:0]=OFFSET (signed 14-bit).
+    // Word 1: bits[31:24]=VDATA (8 bits).
+    // Word 2: bits[7:0]=VADDR (8 bits), bits[14:8]=SADDR (7 bits, 0x7f=off).
+    if (words.size() < 3) return false;
+    const std::uint32_t word1 = words[1];
+    const std::uint32_t word2 = words[2];
+
+    const std::uint32_t vdata_raw = ExtractBits(word1, 24, 8);
+    const std::uint32_t vaddr_raw = ExtractBits(word2, 0, 8);
+    const std::uint32_t saddr_raw = ExtractBits(word2, 8, 7);
+    const std::uint32_t offset = ExtractBits(word, 0, 14);
+
+    // Determine source data width.
+    std::uint8_t data_components = 1;
+    if (instruction_name == "GLOBAL_STORE_B64") {
+      data_components = 2;
+    } else if (instruction_name == "GLOBAL_STORE_B128") {
+      data_components = 4;
+    }
+
+    InstructionOperand vaddr =
+        InstructionOperand::Vgpr(static_cast<std::uint16_t>(vaddr_raw))
+            .WithDescriptor(MakeVectorRegisterDescriptor(
+                OperandRole::kDestination, OperandSlotKind::kDestination,
+                OperandAccess::kRead, 64, 2));
+
+    InstructionOperand vdata =
+        InstructionOperand::Vgpr(static_cast<std::uint16_t>(vdata_raw))
+            .WithDescriptor(MakeVectorRegisterDescriptor(
+                OperandRole::kSource0, OperandSlotKind::kSource0,
+                OperandAccess::kRead,
+                static_cast<std::uint8_t>(data_components * 32),
+                data_components));
+
+    *instruction = DecodedInstruction{};
+    instruction->opcode = instruction_name;
+
+    if (saddr_raw != 0x7f) {
+      InstructionOperand saddr =
+          InstructionOperand::Sgpr(static_cast<std::uint16_t>(saddr_raw * 2))
+              .WithDescriptor(MakeScalarRegisterDescriptor(
+                  OperandRole::kSource1, OperandSlotKind::kSource1,
+                  OperandAccess::kRead, 64, 2));
+      instruction->operand_count = 4;
+      instruction->operands[0] = vaddr;
+      instruction->operands[1] = vdata;
+      instruction->operands[2] = saddr;
+      instruction->operands[3] =
+          InstructionOperand::Imm32(offset)
+              .WithDescriptor(MakeImmediateDescriptor(
+                  OperandRole::kSource2, OperandSlotKind::kSource2));
+    } else {
+      instruction->operand_count = 3;
+      instruction->operands[0] = vaddr;
+      instruction->operands[1] = vdata;
+      instruction->operands[2] =
+          InstructionOperand::Imm32(offset)
+              .WithDescriptor(MakeImmediateDescriptor(
+                  OperandRole::kSource1, OperandSlotKind::kSource1));
+    }
+    *words_consumed = 3;
   } else {
     return false;
   }

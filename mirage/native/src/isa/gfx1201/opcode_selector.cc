@@ -10,13 +10,13 @@ constexpr std::uint32_t kEncSopc = 0x17e;
 constexpr std::uint32_t kEncSop1 = 0x17d;
 constexpr std::uint32_t kEncSop2 = 0x2;
 constexpr std::uint32_t kEncSopk = 0xb;
-constexpr std::uint32_t kEncSmem = 0x30;
+constexpr std::uint32_t kEncSmem = 0x3d;
 constexpr std::uint32_t kEncVop1 = 0x3f;
 constexpr std::uint32_t kEncVopc = 0x3e;
 constexpr std::uint32_t kEncVop2 = 0x0;
-constexpr std::uint32_t kEncVop3 = 0x34;
+constexpr std::uint32_t kEncVop3 = 0x35;
 constexpr std::uint32_t kEncVds = 0x36;
-constexpr std::uint32_t kEncVglobalWord = 55;
+constexpr std::uint32_t kEncVglobalWord = 59;
 
 constexpr std::uint32_t ExtractBits(std::uint32_t value,
                                     std::uint32_t bit_offset,
@@ -28,15 +28,14 @@ constexpr std::uint32_t ExtractBits(std::uint32_t value,
 }
 
 constexpr bool IsPhase0VglobalWord(std::uint32_t word) {
-  return ExtractBits(word, 26, 6) == kEncVglobalWord &&
-         ExtractBits(word, 14, 2) == 2u;
+  return ExtractBits(word, 26, 6) == kEncVglobalWord;
 }
 
 constexpr std::array<Gfx1201OpcodeSelectorRule, 12> kPhase0ComputeRules{{
-    {"ENC_VGLOBAL", 2u, 18u, 7u, "bits[26:31]==55 and bits[14:15]==2"},
+    {"ENC_VGLOBAL", 3u, 14u, 11u, "bits[26:31]==0x3b"},
     {"ENC_VDS", 2u, 17u, 8u, "bits[26:31]==0x36"},
-    {"ENC_SMEM", 2u, 18u, 8u, "bits[26:31]==0x30"},
-    {"ENC_VOP3", 2u, 16u, 10u, "bits[26:31]==0x34"},
+    {"ENC_SMEM", 2u, 18u, 8u, "bits[26:31]==0x3d"},
+    {"ENC_VOP3", 2u, 16u, 10u, "bits[26:31]==0x35"},
     {"ENC_SOPP", 1u, 16u, 7u, "bits[23:31]==0x17f"},
     {"ENC_SOPC", 1u, 16u, 7u, "bits[23:31]==0x17e"},
     {"ENC_SOP1", 1u, 8u, 8u, "bits[23:31]==0x17d"},
